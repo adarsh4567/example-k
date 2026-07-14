@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kaaryo Admin Panel</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --panel: #ffffff;
+      --border: #e2e5ea;
+      --text: #1c1f26;
+      --muted: #6b7280;
+      --accent: #2f6feb;
+      --accent-dark: #1f4fb8;
+      --danger: #d64545;
+      --danger-dark: #b23434;
+      --success: #1f9254;
+      --warning: #b9770e;
+      --radius: 10px;
+      --shadow: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    header.topbar {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    header.topbar h1 {
+      font-size: 18px;
+      margin: 0;
+      font-weight: 700;
+    }
+
+    header.topbar .sub {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .session-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    button {
+      font-family: inherit;
+      font-size: 13px;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 14px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      transition: background 0.15s ease;
+    }
+
+    button:hover {
+      background: var(--accent-dark);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.secondary {
+      background: #eceef1;
+      color: var(--text);
+    }
+
+    button.secondary:hover {
+      background: #dfe2e7;
+    }
+
+    button.danger {
+      background: var(--danger);
+    }
+
+    button.danger:hover {
+      background: var(--danger-dark);
+    }
+
+    button.ghost {
+      background: transparent;
+      color: var(--accent);
+      padding: 6px 8px;
+    }
+
+    button.ghost:hover {
+      background: #eef2ff;
+    }
+
+    input,
+    select,
+    textarea {
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+      width: 100%;
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* ---------- Login ---------- */
+    #loginScreen {
+      max-width: 420px;
+      margin: 60px auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 32px;
+    }
+
+    #loginScreen h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+
+    #loginScreen .field {
+      margin-bottom: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #loginScreen label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    #loginScreen input {
+      width: 100%;
+    }
+
+    #loginScreen button[type="submit"] {
+      width: 100%;
+      padding: 10px;
+      font-weight: 600;
+    }
+
+    #loginError {
+      color: var(--danger);
+      font-size: 13px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    /* ---------- Toolbar ---------- */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .toolbar .filters {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .toolbar .filters label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* ---------- Table ---------- */
+    .table-wrap {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+
+    thead th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--muted);
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      vertical-align: middle;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    tbody tr:hover {
+      background: #fafbfc;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge-in_progress {
+      background: #eef0f2;
+      color: #52575e;
+    }
+
+    .badge-submitted {
+      background: #e7f0ff;
+      color: #2f6feb;
+    }
+
+    .badge-under_review {
+      background: #f1e8ff;
+      color: #7c3aed;
+    }
+
+    .badge-manual_review {
+      background: #fff1e0;
+      color: #b9770e;
+    }
+
+    .badge-info_requested {
+      background: #fff8d6;
+      color: #93750a;
+    }
+
+    .badge-approved {
+      background: #e3f7e9;
+      color: #1f9254;
+    }
+
+    .badge-rejected {
+      background: #fde8e8;
+      color: #b23434;
+    }
+
+    .empty-state {
+      padding: 48px 16px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 16px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    #toastArea {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 999;
+    }
+
+    .toast {
+      background: var(--text);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: var(--shadow);
+      max-width: 340px;
+    }
+
+    .toast.success {
+      background: var(--success);
+    }
+
+    .toast.error {
+      background: var(--danger);
+    }
+
+    /* ---------- Modal ---------- */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(16, 24, 40, 0.45);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px;
+      overflow-y: auto;
+      z-index: 500;
+    }
+
+    .modal-box {
+      background: var(--panel);
+      border-radius: var(--radius);
+      max-width: 720px;
+      width: 100%;
+      box-shadow: var(--shadow);
+      max-height: calc(100vh - 80px);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h2 {
+      font-size: 16px;
+      margin: 0;
+    }
+
+    .modal-body {
+      padding: 20px 22px;
+      overflow-y: auto;
+    }
+
+    .modal-footer {
+      padding: 16px 22px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .detail-section {
+      margin-bottom: 22px;
+    }
+
+    .detail-section h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin: 0 0 10px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 8px 12px;
+      font-size: 13px;
+    }
+
+    .kv-grid dt {
+      color: var(--muted);
+    }
+
+    .kv-grid dd {
+      margin: 0;
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      background: #eef0f2;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 12px;
+    }
+
+    .photo-row {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .photo-item {
+      text-align: center;
+    }
+
+    .photo-item img {
+      width: 110px;
+      height: 110px;
+      object-fit: cover;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #f0f0f0;
+      display: block;
+    }
+
+    .photo-item span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .ref-item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    .log-item {
+      border-left: 2px solid var(--border);
+      padding: 4px 0 4px 12px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+
+    .log-item .log-meta {
+      color: var(--muted);
+    }
+
+    .action-form {
+      display: none;
+      margin-top: 10px;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .action-form.open {
+      display: flex;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="toastArea"></div>
+
+  <!-- ================= LOGIN ================= -->
+  <div id="loginScreen">
+    <h2>Kaaryo Admin Panel</h2>
+    <form id="loginForm">
+      <div class="field">
+        <label for="apiBase">API Base URL</label>
+        <input type="text" id="apiBase" placeholder="http://16.112.18.34:4000" required />
+      </div>
+      <div class="field">
+        <label for="email">Email</label>
+        <input type="email" id="email" placeholder="admin@kaaryo.com" required autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="••••••••" required autocomplete="current-password" />
+      </div>
+      <button type="submit" id="loginBtn">Log in</button>
+      <div id="loginError"></div>
+    </form>
+  </div>
+
+  <!-- ================= DASHBOARD ================= -->
+  <div id="dashboard" class="hidden">
+    <header class="topbar">
+      <div>
+        <h1>Kaaryo Admin Panel</h1>
+        <div class="sub" id="apiBaseLabel"></div>
+      </div>
+      <div class="session-info">
+        <span id="adminEmailLabel"></span>
+        <button class="secondary" id="logoutBtn">Log out</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="toolbar">
+        <div class="filters">
+          <label for="statusFilter">Status</label>
+          <select id="statusFilter">
+            <option value="">All</option>
+            <option value="submitted">Submitted</option>
+            <option value="under_review">Under review</option>
+            <option value="manual_review">Manual review</option>
+            <option value="info_requested">Info requested</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="in_progress">In progress</option>
+          </select>
+        </div>
+        <button class="secondary" id="refreshBtn">↻ Refresh</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>City</th>
+              <th>Status</th>
+              <th>Step</th>
+              <th>Submitted</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="workerTableBody"></tbody>
+        </table>
+        <div id="emptyState" class="empty-state hidden">No applications found for this filter.</div>
+      </div>
+
+      <div class="pagination" id="paginationBar"></div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // ---------- Escaping helpers (defense in depth against any unsanitized stored text) ----------
+      function escapeHtml(value) {
+        return String(value === undefined || value === null ? '' : value).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+      // Tagged template: static parts pass through untouched, interpolated values are escaped.
+      function safe(strings) {
+        var values = Array.prototype.slice.call(arguments, 1);
+        return strings.reduce(function (acc, str, i) {
+          return acc + str + (i < values.length ? escapeHtml(values[i]) : '');
+        }, '');
+      }
+
+      // ---------- State ----------
+      var SESSION_KEY = 'kaaryo_admin_session';
+      var state = {
+        apiBase: '',
+        token: null,
+        adminEmail: null,
+        page: 1,
+        limit: 20,
+        status: '',
+        workers: [],
+        total: 0,
+      };
+
+      // ---------- DOM refs ----------
+      var loginScreen = document.getElementById('loginScreen');
+      var dashboard = document.getElementById('dashboard');
+      var loginForm = document.getElementById('loginForm');
+      var loginError = document.getElementById('loginError');
+      var loginBtn = document.getElementById('loginBtn');
+      var apiBaseInput = document.getElementById('apiBase');
+      var apiBaseLabel = document.getElementById('apiBaseLabel');
+      var adminEmailLabel = document.getElementById('adminEmailLabel');
+      var logoutBtn = document.getElementById('logoutBtn');
+      var statusFilter = document.getElementById('statusFilter');
+      var refreshBtn = document.getElementById('refreshBtn');
+      var workerTableBody = document.getElementById('workerTableBody');
+      var emptyState = document.getElementById('emptyState');
+      var paginationBar = document.getElementById('paginationBar');
+      var toastArea = document.getElementById('toastArea');
+
+      // Default the API base to whatever origin served this page (works when hosted
+      // by the Express app itself); fall back to localhost when opened as a local file.
+      apiBaseInput.value = (window.location.origin && window.location.origin.indexOf('http') === 0)
+        ? window.location.origin
+        : 'http://localhost:4000';
+
+      // ---------- Toasts ----------
+      function toast(message, type) {
+        var el = document.createElement('div');
+        el.className = 'toast' + (type ? ' ' + type : '');
+        el.textContent = message;
+        toastArea.appendChild(el);
+        setTimeout(function () {
+          el.remove();
+        }, 4000);
+      }
+
+      // ---------- Session persistence ----------
+      function saveSession() {
+        localStorage.setItem(SESSION_KEY, JSON.stringify({
+          apiBase: state.apiBase, token: state.token, adminEmail: state.adminEmail,
+        }));
+      }
+      function loadSession() {
+        try {
+          var raw = localStorage.getItem(SESSION_KEY);
+          if (!raw) return null;
+          return JSON.parse(raw);
+        } catch (e) {
+          return null;
+        }
+      }
+      function clearSession() {
+        localStorage.removeItem(SESSION_KEY);
+        state.token = null;
+        state.adminEmail = null;
+      }
+
+      // ---------- API wrapper ----------
+      function api(pathname, options) {
+        options = options || {};
+        var headers = Object.assign({}, options.headers || {});
+        if (!(options.body instanceof FormData) && options.body) {
+          headers['Content-Type'] = 'application/json';
+        }
+        if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+
+        return fetch(state.apiBase + pathname, {
+          method: options.method || 'GET',
+          headers: headers,
+          body: options.body,
+        }).then(function (res) {
+          return res.json().catch(function () { return {}; }).then(function (data) {
+            if (res.status === 401) {
+              clearSession();
+              showLogin();
+              toast('Session expired. Please log in again.', 'error');
+            }
+            if (!data || data.success !== true) {
+              var msg = (data && data.message) || ('Request failed (' + res.status + ')');
+              var err = new Error(msg);
+              err.data = data;
+              err.status = res.status;
+              throw err;
+            }
+            return data;
+          });
+        });
+      }
+
+      // ---------- View switching ----------
+      function showLogin() {
+        loginScreen.classList.remove('hidden');
+        dashboard.classList.add('hidden');
+      }
+      function showDashboard() {
+        loginScreen.classList.add('hidden');
+        dashboard.classList.remove('hidden');
+        apiBaseLabel.textContent = state.apiBase;
+        adminEmailLabel.textContent = state.adminEmail || '';
+      }
+
+      // ---------- Login ----------
+      loginForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        loginError.style.display = 'none';
+        loginBtn.disabled = true;
+        loginBtn.textContent = 'Logging in…';
+
+        var base = apiBaseInput.value.trim().replace(/\/$/, '');
+        var email = document.getElementById('email').value.trim();
+        var password = document.getElementById('password').value;
+
+        state.apiBase = base;
+
+        fetch(base + '/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, password: password }),
+        })
+          .then(function (res) { return res.json().then(function (data) { return { res: res, data: data }; }); })
+          .then(function (result) {
+            var data = result.data;
+            if (!result.res.ok || !data.success) {
+              throw new Error(data.message || 'Login failed');
+            }
+            state.token = data.token;
+            state.adminEmail = data.admin && data.admin.email;
+            saveSession();
+            showDashboard();
+            loadWorkers();
+          })
+          .catch(function (err) {
+            loginError.textContent = err.message || 'Could not reach the server. Check the API base URL.';
+            loginError.style.display = 'block';
+          })
+          .finally(function () {
+            loginBtn.disabled = false;
+            loginBtn.textContent = 'Log in';
+          });
+      });
+
+      logoutBtn.addEventListener('click', function () {
+        clearSession();
+        showLogin();
+      });
+
+      // ---------- Worker list ----------
+      var STATUS_LABELS = {
+        in_progress: 'In progress',
+        submitted: 'Submitted',
+        under_review: 'Under review',
+        manual_review: 'Manual review',
+        info_requested: 'Info requested',
+        approved: 'Approved',
+        rejected: 'Rejected',
+      };
+
+      function statusBadge(status) {
+        var label = STATUS_LABELS[status] || status;
+        return safe`<span class="badge badge-${status}">${label}</span>`;
+      }
+
+      function fmtDate(value) {
+        if (!value) return '—';
+        var d = new Date(value);
+        if (isNaN(d.getTime())) return '—';
+        return d.toLocaleString();
+      }
+
+      function loadWorkers() {
+        workerTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px;">Loading…</td></tr>';
+        emptyState.classList.add('hidden');
+
+        var qs = new URLSearchParams();
+        if (state.status) qs.set('status', state.status);
+        qs.set('page', state.page);
+        qs.set('limit', state.limit);
+
+        api('/api/admin/workers?' + qs.toString())
+          .then(function (data) {
+            state.workers = data.workers || [];
+            state.total = data.total || 0;
+            renderWorkerTable();
+            renderPagination();
+          })
+          .catch(function (err) {
+            workerTableBody.innerHTML = '';
+            toast(err.message, 'error');
+          });
+      }
+
+      function renderWorkerTable() {
+        workerTableBody.innerHTML = '';
+        if (!state.workers.length) {
+          emptyState.classList.remove('hidden');
+          return;
+        }
+        emptyState.classList.add('hidden');
+
+        state.workers.forEach(function (w) {
+          var tr = document.createElement('tr');
+          var city = (w.location && w.location.city) || '—';
+          tr.innerHTML = safe`
+        <td>${w.fullName || '(no name yet)'}</td>
+        <td>${w.phone}</td>
+        <td>${city}</td>
+        <td>${''}</td>
+        <td>${w.onboardingStep}</td>
+        <td>${fmtDate(w.submittedAt || w.createdAt)}</td>
+        <td></td>
+      `;
+          // Insert the status badge (has real markup, so not run through the escaping template) and the View button.
+          tr.children[3].innerHTML = statusBadge(w.status);
+          var viewBtn = document.createElement('button');
+          viewBtn.className = 'ghost';
+          viewBtn.textContent = 'View →';
+          viewBtn.addEventListener('click', function () { openDetail(w._id); });
+          tr.children[6].appendChild(viewBtn);
+          workerTableBody.appendChild(tr);
+        });
+      }
+
+      function renderPagination() {
+        var totalPages = Math.max(1, Math.ceil(state.total / state.limit));
+        paginationBar.innerHTML = '';
+
+        var prevBtn = document.createElement('button');
+        prevBtn.className = 'secondary';
+        prevBtn.textContent = '← Prev';
+        prevBtn.disabled = state.page <= 1;
+        prevBtn.addEventListener('click', function () { state.page--; loadWorkers(); });
+
+        var nextBtn = document.createElement('button');
+        nextBtn.className = 'secondary';
+        nextBtn.textContent = 'Next →';
+        nextBtn.disabled = state.page >= totalPages;
+        nextBtn.addEventListener('click', function () { state.page++; loadWorkers(); });
+
+        var label = document.createElement('span');
+        label.textContent = 'Page ' + state.page + ' of ' + totalPages + ' (' + state.total + ' total)';
+
+        paginationBar.appendChild(prevBtn);
+        paginationBar.appendChild(label);
+        paginationBar.appendChild(nextBtn);
+      }
+
+      statusFilter.addEventListener('change', function () {
+        state.status = statusFilter.value;
+        state.page = 1;
+        loadWorkers();
+      });
+      refreshBtn.addEventListener('click', loadWorkers);
+
+      // ---------- Worker detail modal ----------
+      var CLEANING_TYPE_LABELS = {
+        basic_home: 'Basic home cleaning', kitchen: 'Kitchen cleaning', bathroom: 'Bathroom cleaning',
+        deep_cleaning: 'Deep cleaning', sofa_carpet: 'Sofa / carpet cleaning',
+        office_commercial: 'Office / commercial cleaning', post_construction: 'Post-construction cleaning',
+      };
+      var EXPERIENCE_LABELS = { lt_1: '< 1 year', '1_3': '1–3 years', '3_5': '3–5 years', gt_5: '> 5 years' };
+      var HOURS_LABELS = { morning: 'Morning (6am–12pm)', afternoon: 'Afternoon (12pm–5pm)', evening: 'Evening (5pm–9pm)', flexible: 'Flexible' };
+      var DAYS_LABELS = { weekdays: 'Weekdays', weekends: 'Weekends', all_days: 'All days' };
+      var RELATIONSHIP_LABELS = { past_employer: 'Past employer', neighbor: 'Neighbor', known_family: 'Known family', other: 'Other' };
+
+      function closeModal() {
+        var overlay = document.querySelector('.modal-overlay');
+        if (overlay) overlay.remove();
+      }
+
+      function openDetail(id) {
+        api('/api/admin/workers/' + id)
+          .then(function (data) { renderDetailModal(data.worker); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      function imgUrl(relPath) {
+        if (!relPath) return '';
+        return state.apiBase + relPath;
+      }
+
+      function photoBlock(label, relPath) {
+        if (!relPath) return '';
+        return safe`
+      <div class="photo-item">
+        <img src="${imgUrl(relPath)}" alt="${label}" onerror="this.style.opacity=0.3;this.alt='(image unavailable)'" />
+        <span>${label}</span>
+      </div>
+    `;
+      }
+
+      function renderDetailModal(w) {
+        closeModal();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        // ---- Header ----
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>${w.fullName || '(no name yet)'} — ${w.phone}</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        // ---- Body ----
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        var statusSection = safe`
+      <div class="detail-section">
+        <h3>Application status</h3>
+        <div class="kv-grid">
+          <dt>Status</dt><dd>${''}</dd>
+          <dt>Onboarding step</dt><dd>${w.onboardingStep}</dd>
+          <dt>Submitted at</dt><dd>${fmtDate(w.submittedAt)}</dd>
+          <dt>Referral code</dt><dd>${w.referralCode || '—'}</dd>
+        </div>
+      </div>
+    `;
+
+        var photos = photoBlock('Profile photo', w.profilePhoto) +
+          photoBlock('Live selfie (face match)', w.faceMatch && w.faceMatch.selfiePath) +
+          (w.consent && w.consent.signaturePath && w.consent.signaturePath.indexOf('/uploads/') === 0
+            ? photoBlock('Signature', w.consent.signaturePath)
+            : '');
+
+        var personalSection = safe`
+      <div class="detail-section">
+        <h3>Personal details</h3>
+        <div class="kv-grid">
+          <dt>Full name</dt><dd>${w.fullName || '—'}</dd>
+          <dt>Date of birth</dt><dd>${w.dob ? new Date(w.dob).toLocaleDateString() : '—'}</dd>
+          <dt>Gender</dt><dd>${w.gender || '—'}</dd>
+        </div>
+        <div class="photo-row" style="margin-top:12px;">${photos}</div>
+      </div>
+    `;
+
+        var loc = w.location || {};
+        var locationSection = safe`
+      <div class="detail-section">
+        <h3>Location</h3>
+        <div class="kv-grid">
+          <dt>City</dt><dd>${loc.city || '—'}</dd>
+          <dt>Area</dt><dd>${loc.area || '—'}</dd>
+          <dt>Pincode</dt><dd>${loc.pincode || '—'}</dd>
+          <dt>Address</dt><dd>${loc.address || '—'}</dd>
+          <dt>Travel radius</dt><dd>${loc.travelRadiusKm ? loc.travelRadiusKm + ' km' : '—'}</dd>
+        </div>
+      </div>
+    `;
+
+        var aad = w.aadhaar || {};
+        var aadhaarSection = safe`
+      <div class="detail-section">
+        <h3>Aadhaar verification</h3>
+        <div class="kv-grid">
+          <dt>Verified</dt><dd>${aad.verified ? 'Yes' : 'No'}</dd>
+          <dt>Aadhaar (last 4)</dt><dd>${aad.last4 ? 'XXXX-XXXX-' + aad.last4 : '—'}</dd>
+          <dt>Name on Aadhaar</dt><dd>${aad.nameFromAadhaar || '—'}</dd>
+          <dt>DOB on Aadhaar</dt><dd>${aad.dobFromAadhaar || '—'}</dd>
+          <dt>Mobile mismatch</dt><dd>${aad.mobileMismatch ? 'Yes — flagged' : 'No'}</dd>
+          <dt>Verified at</dt><dd>${fmtDate(aad.verifiedAt)}</dd>
+        </div>
+      </div>
+    `;
+
+        var fm = w.faceMatch || {};
+        var faceMatchSection = safe`
+      <div class="detail-section">
+        <h3>Face match</h3>
+        <div class="kv-grid">
+          <dt>Result</dt><dd>${fm.status || 'pending'}</dd>
+          <dt>Attempts</dt><dd>${fm.attempts || 0}</dd>
+        </div>
+      </div>
+    `;
+
+        var work = w.work || {};
+        var cleaningChips = (work.cleaningTypes || []).map(function (t) {
+          return safe`<span class="chip">${CLEANING_TYPE_LABELS[t] || t}</span>`;
+        }).join('');
+        var equipmentChips = (work.equipmentList || []).map(function (t) {
+          return safe`<span class="chip">${t}</span>`;
+        }).join('');
+        var workSection = safe`
+      <div class="detail-section">
+        <h3>Work details</h3>
+        <div class="kv-grid">
+          <dt>Cleaning types</dt><dd><div class="chip-row">${cleaningChips || '—'}</div></dd>
+          <dt>Experience</dt><dd>${EXPERIENCE_LABELS[work.experience] || work.experience || '—'}</dd>
+          <dt>Worked before</dt><dd>${work.workedBefore ? (work.prevPlatform ? (work.prevPlatform.name + ' — ' + (work.prevPlatform.duration || '')) : 'Yes') : 'No'}</dd>
+          <dt>Owns equipment</dt><dd>${work.ownsEquipment ? 'Yes' : 'No'}</dd>
+          <dt>Equipment</dt><dd><div class="chip-row">${equipmentChips || '—'}</div></dd>
+          <dt>Working hours</dt><dd>${HOURS_LABELS[work.workingHours] || work.workingHours || '—'}</dd>
+          <dt>Working days</dt><dd>${DAYS_LABELS[work.workingDays] || work.workingDays || '—'}</dd>
+        </div>
+      </div>
+    `;
+
+        var refsHtml = (w.references || []).map(function (r) {
+          return safe`
+        <div class="ref-item">
+          <strong>${r.name}</strong> — ${RELATIONSHIP_LABELS[r.relationship] || r.relationship}<br/>
+          ${r.phone}
+        </div>
+      `;
+        }).join('') || '<p style="color:var(--muted);font-size:13px;">No references on file.</p>';
+        var referencesSection = safe`
+      <div class="detail-section">
+        <h3>References</h3>
+        ${''}
+      </div>
+    `;
+
+        var consent = w.consent || {};
+        var consentSection = safe`
+      <div class="detail-section">
+        <h3>Background check consent</h3>
+        <div class="kv-grid">
+          <dt>Background check</dt><dd>${consent.backgroundCheck ? 'Consented' : '—'}</dd>
+          <dt>Info accurate</dt><dd>${consent.infoAccurate ? 'Confirmed' : '—'}</dd>
+          <dt>Signed via</dt><dd>${consent.esignVerified ? 'Aadhaar e-sign (mock)' : (consent.signaturePath ? 'Uploaded signature' : '—')}</dd>
+          <dt>Signed at</dt><dd>${fmtDate(consent.signedAt)}</dd>
+        </div>
+      </div>
+    `;
+
+        var logHtml = (w.reviewLog || []).slice().reverse().map(function (l) {
+          return safe`
+        <div class="log-item">
+          <div><strong>${l.action}</strong> ${l.message ? '— ' + l.message : ''}</div>
+          <div class="log-meta">${l.by || 'system'} · ${fmtDate(l.at)}</div>
+        </div>
+      `;
+        }).join('') || '<p style="color:var(--muted);font-size:13px;">No log entries yet.</p>';
+        var logSection = safe`
+      <div class="detail-section">
+        <h3>Review log</h3>
+        ${''}
+      </div>
+    `;
+
+        body.innerHTML = statusSection + personalSection + locationSection + aadhaarSection +
+          faceMatchSection + workSection + referencesSection + consentSection + logSection;
+
+        // Fill in the pieces that contain trusted, already-built markup (badges/refs/log)
+        // rather than raw strings, so they weren't escaped by the `safe` tag above.
+        body.querySelector('.detail-section dd').innerHTML = statusBadge(w.status);
+        var refsSectionEls = body.querySelectorAll('.detail-section');
+        refsSectionEls.forEach(function (sec) {
+          var h3 = sec.querySelector('h3');
+          if (h3 && h3.textContent === 'References') sec.innerHTML = '<h3>References</h3>' + refsHtml;
+          if (h3 && h3.textContent === 'Review log') sec.innerHTML = '<h3>Review log</h3>' + logHtml;
+        });
+
+        // ---- Footer (actions) ----
+        var footer = document.createElement('div');
+        footer.className = 'modal-footer';
+        footer.style.flexDirection = 'column';
+        footer.style.alignItems = 'stretch';
+
+        var decidable = ['submitted', 'under_review', 'manual_review', 'info_requested'];
+        if (!decidable.includes(w.status)) {
+          var note = document.createElement('p');
+          note.style.color = 'var(--muted)';
+          note.style.fontSize = '13px';
+          note.style.margin = '0';
+          note.textContent = 'No actions available — application is already ' + STATUS_LABELS[w.status] + '.';
+          footer.appendChild(note);
+        } else {
+          var btnRow = document.createElement('div');
+          btnRow.style.display = 'flex';
+          btnRow.style.gap = '10px';
+          btnRow.style.flexWrap = 'wrap';
+
+          if (w.status === 'submitted') {
+            var reviewBtn = document.createElement('button');
+            reviewBtn.className = 'secondary';
+            reviewBtn.textContent = 'Move to review';
+            reviewBtn.addEventListener('click', function () {
+              runAction('/api/admin/workers/' + w._id + '/move-to-review', {}, 'Moved to under review');
+            });
+            btnRow.appendChild(reviewBtn);
+          }
+
+          var approveBtn = document.createElement('button');
+          approveBtn.textContent = '✓ Approve';
+          approveBtn.addEventListener('click', function () {
+            if (confirm('Approve this application? The worker will be notified.')) {
+              runAction('/api/admin/workers/' + w._id + '/approve', {}, 'Worker approved');
+            }
+          });
+
+          var rejectBtn = document.createElement('button');
+          rejectBtn.className = 'danger';
+          rejectBtn.textContent = '✕ Reject';
+          rejectBtn.addEventListener('click', function () { toggleForm(rejectForm); });
+
+          var infoBtn = document.createElement('button');
+          infoBtn.className = 'secondary';
+          infoBtn.textContent = '? Request info';
+          infoBtn.addEventListener('click', function () { toggleForm(infoForm); });
+
+          btnRow.appendChild(approveBtn);
+          btnRow.appendChild(rejectBtn);
+          btnRow.appendChild(infoBtn);
+          footer.appendChild(btnRow);
+
+          var rejectForm = buildInlineForm('Reason for rejection (required)', 'Confirm reject', 'danger', function (value) {
+            if (!value.trim()) { toast('A rejection reason is required', 'error'); return; }
+            runAction('/api/admin/workers/' + w._id + '/reject', { reason: value.trim() }, 'Worker rejected');
+          });
+          var infoForm = buildInlineForm('What information is missing? (required)', 'Send request', 'secondary', function (value) {
+            if (!value.trim()) { toast('A message is required', 'error'); return; }
+            runAction('/api/admin/workers/' + w._id + '/request-info', { message: value.trim() }, 'Information requested from worker');
+          });
+          footer.appendChild(rejectForm);
+          footer.appendChild(infoForm);
+        }
+
+        function toggleForm(form) {
+          [rejectForm, infoForm].forEach(function (f) { if (f !== form) f.classList.remove('open'); });
+          form.classList.toggle('open');
+        }
+
+        function runAction(path, payload, successMsg) {
+          var buttons = footer.querySelectorAll('button');
+          buttons.forEach(function (b) { b.disabled = true; });
+          api(path, { method: 'POST', body: JSON.stringify(payload) })
+            .then(function () {
+              toast(successMsg, 'success');
+              closeModal();
+              loadWorkers();
+            })
+            .catch(function (err) {
+              toast(err.message, 'error');
+              buttons.forEach(function (b) { b.disabled = false; });
+            });
+        }
+
+        box.appendChild(header);
+        box.appendChild(body);
+        box.appendChild(footer);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      function buildInlineForm(labelText, confirmText, confirmClass, onConfirm) {
+        var wrap = document.createElement('div');
+        wrap.className = 'action-form';
+
+        var label = document.createElement('label');
+        label.textContent = labelText;
+        label.style.fontSize = '12px';
+        label.style.color = 'var(--muted)';
+
+        var textarea = document.createElement('textarea');
+
+        var row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '8px';
+
+        var confirmBtn = document.createElement('button');
+        confirmBtn.className = confirmClass;
+        confirmBtn.textContent = confirmText;
+        confirmBtn.addEventListener('click', function () { onConfirm(textarea.value); });
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.className = 'secondary';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', function () { wrap.classList.remove('open'); textarea.value = ''; });
+
+        row.appendChild(confirmBtn);
+        row.appendChild(cancelBtn);
+        wrap.appendChild(label);
+        wrap.appendChild(textarea);
+        wrap.appendChild(row);
+        return wrap;
+      }
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeModal();
+      });
+
+      // ---------- Bootstrap ----------
+      var existing = loadSession();
+      if (existing && existing.token && existing.apiBase) {
+        state.apiBase = existing.apiBase;
+        state.token = existing.token;
+        state.adminEmail = existing.adminEmail;
+        apiBaseInput.value = existing.apiBase;
+        showDashboard();
+        loadWorkers();
+      } else {
+        showLogin();
+      }
+    })();
+  </script>
+</body>
+
+</html>

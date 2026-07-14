@@ -11,6 +11,7 @@ const errorHandler = require('./src/middleware/errorHandler');
 const authRoutes = require('./src/routes/authRoutes');
 const onboardingRoutes = require('./src/routes/onboardingRoutes');
 const placesRoutes = require('./src/routes/placesRoutes');
+const profileRoutes = require('./src/routes/profileRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 
 const app = express();
@@ -33,10 +34,16 @@ app.get('/', (req, res) => {
   res.json({ service: 'Kaaryo Worker Onboarding API', status: 'ok' });
 });
 
+// Admin panel — single static file, served explicitly (not the whole project root).
+app.get(['/admin', '/admin.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/places', placesRoutes);
+app.use('/api/profile', profileRoutes);
 app.use('/api/admin', adminRoutes);
 
 // 404 + error handling

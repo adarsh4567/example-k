@@ -50,6 +50,16 @@ const referenceSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Worker's active expertise selection: main category + chosen subcategory keys.
+// Only active selections are stored; the full catalog is merged in at read time.
+const expertiseSchema = new mongoose.Schema(
+  {
+    category: { type: String, required: true }, // e.g. 'cleaning'
+    subcategories: [String],                    // e.g. ['basic_home', 'kitchen']
+  },
+  { _id: false }
+);
+
 const reviewLogSchema = new mongoose.Schema(
   {
     action: String,          // approved / rejected / info_requested / flagged / submitted
@@ -131,6 +141,13 @@ const workerSchema = new mongoose.Schema(
     // Screen 9 — submission / referral
     referralCode: String,
     submittedAt: Date,
+
+    // ── Profile (editable anytime, post-onboarding) ──
+    // Services the worker offers. Backfilled from work.cleaningTypes when empty.
+    expertise: [expertiseSchema],
+    // Shown on the profile card. Populated over time by the platform (jobs/ratings).
+    rating: { type: Number, default: null },      // null = "New", no ratings yet
+    jobsCompleted: { type: Number, default: 0 },
 
     reviewLog: [reviewLogSchema],
   },

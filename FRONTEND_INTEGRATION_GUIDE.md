@@ -444,5 +444,97 @@ Call this on app open (if `status !== 'in_progress'`) to drive the progress trac
 | 8 | POST | `/api/onboarding/consent` | worker |
 | 9 | POST | `/api/onboarding/submit` | worker |
 | 9 | GET | `/api/onboarding/status` | worker |
+| Profile | GET | `/api/profile` | worker |
+| Profile | GET | `/api/profile/catalog` | worker |
+| Profile | PUT | `/api/profile/expertise` | worker |
+| Profile | PUT | `/api/profile` | worker |
 
 Mock OTP for **all** OTP steps (phone, Aadhaar, e-sign) during development: **`123456`**.
+
+---
+
+## PROFILE SCREEN (post-onboarding, editable anytime)
+
+All profile endpoints require the worker JWT and work in **any** application status (unlike onboarding, which locks after submit).
+
+### `GET /api/profile`
+Returns everything the profile screen renders in one payload.
+```json
+{
+  "success": true,
+  "message": "Profile fetched",
+  "profile": {
+    "id": "6a55...",
+    "fullName": "Kiran Kumar",
+    "displayInitial": "K",
+    "profilePhoto": "/uploads/profilePhoto_....jpg",
+    "photoUrl": "/uploads/profilePhoto_....jpg",
+    "city": "Bengaluru",
+    "serviceArea": "Bengaluru",
+    "phone": "9876543210",
+    "phoneFormatted": "+91 98765 43210",
+    "rating": null,
+    "jobsCompleted": 0,
+    "status": "approved",
+    "expertise": [
+      {
+        "category": "cleaning",
+        "name": "Cleaning",
+        "color": "#3b82f6",
+        "active": true,
+        "subcategories": [
+          { "key": "basic_home", "name": "Basic home cleaning", "active": true },
+          { "key": "kitchen", "name": "Kitchen cleaning", "active": true },
+          { "key": "bathroom", "name": "Bathroom cleaning", "active": false }
+        ]
+      },
+      {
+        "category": "electrical",
+        "name": "Electrical",
+        "color": "#f59e0b",
+        "active": false,
+        "subcategories": [ { "key": "wiring", "name": "Wiring & repair", "active": false } ]
+      }
+    ],
+    "account": { "serviceArea": "Bengaluru", "phone": "+91 98765 43210" }
+  }
+}
+```
+Rendering notes:
+- **Profile card:** use `displayInitial` for the avatar when `photoUrl` is null; prepend the API base URL to `photoUrl` otherwise. `rating: null` → show "New" (no ratings yet). `jobsCompleted` → "N Jobs Done".
+- **My Expertise:** `expertise` already contains **all 8 categories merged with the worker's selections**. Render a category as an active card (color + check) when `category.active === true`, else as an available card (`+`). Tapping a card expands its `subcategories`; each has its own `active` flag to drive the sub-toggles.
+- **Account:** `account.serviceArea` and `account.phone` are pre-formatted for display.
+
+### `GET /api/profile/catalog`
+The raw catalog (all categories + subcategories + colors), if you prefer to render the picker from the catalog instead of the merged `expertise`.
+```json
+{ "success": true, "message": "Service catalog", "catalog": [ { "key": "cleaning", "name": "Cleaning", "color": "#3b82f6", "subcategories": [ { "key": "basic_home", "name": "Basic home cleaning" } ] } ] }
+```
+
+### `PUT /api/profile/expertise` — JSON
+Send the **full desired state** (not a delta). Categories with no subcategories are dropped (i.e. that's how you turn a whole category off).
+```json
+{
+  "expertise": [
+    { "category": "cleaning", "subcategories": ["basic_home", "kitchen"] },
+    { "category": "electrical", "subcategories": ["wiring"] }
+  ]
+}
+```
+Success `200` returns the same shape as `GET /api/profile` (`{ profile: {...} }`) with the updated expertise. The `cleaning` category is mirrored back into onboarding `work.cleaningTypes` automatically.
+
+Errors (`422`): `"expertise must be an array..."`, `"Invalid service category: X"`, `"Invalid subcategory \"X\" for category \"Y\""`, `"Duplicate category in request: X"`.
+
+### `PUT /api/profile` — multipart/form-data (the "Edit" button)
+All fields optional; send only what changed.
+
+| Field | Type | Notes |
+|---|---|---|
+| `fullName` | text | non-empty if sent |
+| `city` | text | must be an operating city (see `/api/places/cities`) — updates Service Area |
+| `profilePhoto` | file | new avatar image |
+
+Success `200` returns `{ profile: {...} }` (same shape as `GET /api/profile`).
+Errors (`422`): `"Full name cannot be empty"`, `"Service area must be one of: ..."`.
+
+> Phone is the login identity and is **not** editable here. Rating and jobsCompleted are platform-managed (set as the worker completes jobs), not editable via these endpoints.
