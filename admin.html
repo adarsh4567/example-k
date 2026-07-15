@@ -498,7 +498,7 @@
     <form id="loginForm">
       <div class="field">
         <label for="apiBase">API Base URL</label>
-        <input type="text" id="apiBase" placeholder="http://16.112.18.34:4000" required />
+        <input type="text" id="apiBase" placeholder="https://example-k.onrender.com" value="https://example-k.onrender.com" required />
       </div>
       <div class="field">
         <label for="email">Email</label>
@@ -616,9 +616,9 @@
 
       // Default the API base to whatever origin served this page (works when hosted
       // by the Express app itself); fall back to localhost when opened as a local file.
-      apiBaseInput.value = (window.location.origin && window.location.origin.indexOf('http') === 0)
+      apiBaseInput.value = (window.location.origin && window.location.origin.indexOf('https') === 0)
         ? window.location.origin
-        : 'http://localhost:4000';
+        : 'https://example-k.onrender.com';
 
       // ---------- Toasts ----------
       function toast(message, type) {

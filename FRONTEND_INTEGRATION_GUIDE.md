@@ -448,8 +448,138 @@ Call this on app open (if `status !== 'in_progress'`) to drive the progress trac
 | Profile | GET | `/api/profile/catalog` | worker |
 | Profile | PUT | `/api/profile/expertise` | worker |
 | Profile | PUT | `/api/profile` | worker |
+| Dispatch | POST | `/api/service-requests` | none (customer) |
+| Dispatch | GET | `/api/service-requests/:id` | none (customer) |
+| Dispatch | POST | `/api/service-requests/:id/cancel` | none (customer) |
+| Dispatch | PUT | `/api/jobs/availability` | worker |
+| Dispatch | GET | `/api/jobs/available` | worker |
+| Dispatch | GET | `/api/jobs/mine` | worker |
+| Dispatch | POST | `/api/jobs/:id/accept` | worker |
+| Dispatch | POST | `/api/jobs/:id/decline` | worker |
+| Dispatch | POST | `/api/jobs/:id/complete` | worker |
 
 Mock OTP for **all** OTP steps (phone, Aadhaar, e-sign) during development: **`123456`**.
+
+---
+
+## ON-DEMAND SERVICE REQUESTS (dispatch engine)
+
+A customer requests a service → the backend broadcasts it to the nearest eligible **online, approved** workers within a radius → the first to accept wins → the job goes **in_progress**. If nobody accepts before the wave times out, the radius expands automatically; if the max radius is reached, the request expires.
+
+**Worker eligibility to receive an offer:** `status = approved`, `availability.isOnline = true`, not already on a job, offers the requested category (via profile expertise or legacy cleaning types), within the current search radius, **and the job is within the worker's own onboarding travel radius** (`location.travelRadiusKm` — 1/2/5/10 km). A worker who chose "2 km" is never offered a job 5 km away, even as the search radius expands.
+
+### Real-time delivery (Socket.IO) — no polling
+
+Offers are **pushed live to the worker over a Socket.IO connection**. The worker app does **not** poll `/api/jobs/available` — that endpoint remains only as a fallback/snapshot. The worker holds one authenticated socket and reacts to events.
+
+**Connect** (pass the worker JWT in the handshake):
+```js
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:4000', { auth: { token: WORKER_JWT } });
+```
+
+**Server → worker events:**
+| Event | Payload | Meaning |
+|---|---|---|
+| `jobs:open` | `{ jobs: [offer] }` | snapshot of offers already open to you, sent once on connect |
+| `job:offer` | `offer` | a new job was just dispatched to you (show it, start your accept timer) |
+| `job:taken` | `{ id }` | another worker took a job you were offered — remove it from the UI |
+| `job:expired` | `{ id }` | a job you were offered expired with no taker — remove it |
+
+`offer` shape: `{ id, category, subcategory, address, distanceKm, customerName, status, wave, offeredAt }` (customer phone hidden until accept).
+
+**Worker → server events** (each takes an ack callback):
+| Emit | Payload | Ack response |
+|---|---|---|
+| `job:accept` | `{ requestId }` | `{ ok: true, job: {…customer contact revealed…} }` or `{ ok: false, message }` |
+| `job:decline` | `{ requestId }` | `{ ok: true }` or `{ ok: false, message }` |
+| `presence:update` | `{ isOnline?, lat?, lng? }` | `{ ok: true, availability }` — set online state + live location over the socket |
+
+```js
+socket.on('job:offer', (offer) => showOffer(offer));
+socket.on('job:taken', ({ id }) => removeOffer(id));
+socket.emit('job:accept', { requestId }, (res) => {
+  if (res.ok) openJob(res.job);        // customer name + phone now present
+  else toast(res.message);             // e.g. "This job is no longer available"
+});
+```
+
+Test it without the app using the bundled CLI client: `npm run worker-client -- <WORKER_JWT>` (see the end of this section).
+
+### Worker side (REST — for availability, history, and as a socket fallback)
+
+**`PUT /api/jobs/availability`** — go online/offline + send live location (heartbeat). A worker only receives offers while online with a location set. (Equivalent to the socket `presence:update` event.)
+```json
+{ "isOnline": true, "lat": 12.9352, "lng": 77.6245 }
+```
+→ `{ "success": true, "message": "Availability updated", "availability": { "isOnline": true, "lastSeenAt": "...", "location": { "type": "Point", "coordinates": [77.6245, 12.9352] } } }`
+
+**`GET /api/jobs/available`** — fallback snapshot of open offers (the socket `jobs:open`/`job:offer` events are the primary path; **do not poll this**).
+```json
+{ "success": true, "jobs": [ { "id": "...", "category": "cleaning", "subcategory": "kitchen", "address": "…", "distanceKm": 1.4, "customerName": "Riya", "status": "searching", "wave": 1, "offeredAt": "…" } ] }
+```
+> Customer phone is hidden until the worker accepts.
+
+**`POST /api/jobs/:id/accept`** — REST equivalent of the `job:accept` socket event. First-to-accept-wins.
+- Success `200`: `{ "success": true, "message": "Job accepted — you are now in progress", "job": { "id": "...", "status": "in_progress", "customer": { "name": "Riya", "phone": "9800000000" }, "address": "…", "location": {...}, "acceptedAt": "…" } }` (customer contact now revealed)
+- Conflict `409`: `"This job is no longer available (already taken or expired)"` or `"You already have an active job. Complete it first."`
+
+**`POST /api/jobs/:id/decline`** — decline an offer → `200`.
+
+**`GET /api/jobs/mine`** — `{ "active": [ ... in_progress jobs ... ], "history": [ ... completed/cancelled ... ] }`.
+
+**`POST /api/jobs/:id/complete`** — assigned worker marks the job done → status `completed`, worker freed, `jobsCompleted` incremented (feeds the profile card). `403` if not assigned to you, `409` if not in_progress.
+
+### Customer side (no auth for now — fire directly)
+
+**`POST /api/service-requests`**
+```json
+{
+  "customerName": "Riya",
+  "customerPhone": "9800000000",
+  "category": "cleaning",
+  "subcategory": "kitchen",
+  "lat": 12.9352,
+  "lng": 77.6245,
+  "address": "Flat 5B, HSR Layout",
+  "radiusKm": 3
+}
+```
+- `subcategory` and `radiusKm` are optional (radius defaults to `DISPATCH_INITIAL_RADIUS_KM`).
+- Success `201`: `{ "success": true, "message": "Request created — notified N nearby worker(s)...", "workersNotified": N, "request": { "id": "...", "status": "searching", "radiusKm": 3, "wave": 1, "workersNotified": N, ... } }`
+- Errors `422`: missing/invalid name, phone, category, subcategory, or lat/lng.
+
+**`GET /api/service-requests/:id`** — customer polls for live status.
+```json
+{
+  "success": true,
+  "request": {
+    "id": "...",
+    "status": "in_progress",
+    "category": "cleaning",
+    "subcategory": "kitchen",
+    "radiusKm": 3,
+    "wave": 1,
+    "workersNotified": 4,
+    "worker": { "id": "...", "name": "Kiran Kumar", "phone": "9876543210", "rating": null, "jobsCompleted": 3, "distanceKm": 1.4 },
+    "acceptedAt": "…"
+  }
+}
+```
+`status` transitions: `searching` → `in_progress` (accepted) → `completed`; or `cancelled` / `expired`. Worker details appear once `in_progress`.
+
+**`POST /api/service-requests/:id/cancel`** — cancel a `searching` or `in_progress` request (frees the worker). `409` if already completed/cancelled/expired.
+
+### Tunables (`.env`)
+`DISPATCH_INITIAL_RADIUS_KM` (3), `DISPATCH_RADIUS_INCREMENT_KM` (3), `DISPATCH_MAX_RADIUS_KM` (15), `DISPATCH_BATCH_SIZE` (10), `DISPATCH_WAVE_TIMEOUT_SECONDS` (30), `DISPATCH_SWEEP_INTERVAL_SECONDS` (5).
+
+### Testing the real-time flow manually
+1. Start the server: `npm start`
+2. In another terminal, connect a worker socket (stands in for the app):
+   `npm run worker-client -- <WORKER_JWT>`  (add `AUTO_ACCEPT=1` env to auto-accept the first offer)
+3. Make sure that worker is **approved** and **online with a location** — the client can do this, or call `PUT /api/jobs/availability`.
+4. Fire a customer request near that location: `POST /api/service-requests`.
+5. Watch the `job:offer` land in the client instantly; type `a <requestId>` to accept. Connect a second worker client to see the loser get `job:taken`.
 
 ---
 

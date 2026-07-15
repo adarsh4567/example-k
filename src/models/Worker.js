@@ -149,6 +149,19 @@ const workerSchema = new mongoose.Schema(
     rating: { type: Number, default: null },      // null = "New", no ratings yet
     jobsCompleted: { type: Number, default: 0 },
 
+    // ── Live dispatch state (for the on-demand service-request engine) ──
+    // GeoJSON Point [longitude, latitude]. Set via the availability heartbeat.
+    currentLocation: {
+      type: { type: String, enum: ['Point'] },
+      coordinates: { type: [Number] }, // [lng, lat]
+    },
+    availability: {
+      isOnline: { type: Boolean, default: false },
+      lastSeenAt: Date,
+    },
+    // The service request the worker is currently assigned to (null = free to receive offers).
+    activeRequest: { type: mongoose.Schema.Types.ObjectId, ref: 'ServiceRequest', default: null },
+
     reviewLog: [reviewLogSchema],
   },
   { timestamps: true }
@@ -156,5 +169,9 @@ const workerSchema = new mongoose.Schema(
 
 workerSchema.statics.STATUS = APPLICATION_STATUS;
 workerSchema.statics.STEPS = ONBOARDING_STEPS;
+
+// Geospatial index for "nearby workers" dispatch queries ($geoNear).
+// Documents without currentLocation.coordinates are simply not indexed.
+workerSchema.index({ currentLocation: '2dsphere' });
 
 module.exports = mongoose.model('Worker', workerSchema);

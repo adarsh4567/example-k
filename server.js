@@ -1,6 +1,7 @@
 require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -12,7 +13,11 @@ const authRoutes = require('./src/routes/authRoutes');
 const onboardingRoutes = require('./src/routes/onboardingRoutes');
 const placesRoutes = require('./src/routes/placesRoutes');
 const profileRoutes = require('./src/routes/profileRoutes');
+const serviceRequestRoutes = require('./src/routes/serviceRequestRoutes');
+const jobsRoutes = require('./src/routes/jobsRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
+const dispatchService = require('./src/services/dispatchService');
+const socket = require('./src/realtime/socket');
 
 const app = express();
 
@@ -44,6 +49,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/places', placesRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/service-requests', serviceRequestRoutes);
+app.use('/api/jobs', jobsRoutes);
 app.use('/api/admin', adminRoutes);
 
 // 404 + error handling
@@ -52,11 +59,16 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
+const server = http.createServer(app);
+socket.init(server); // attach the Socket.IO real-time channel to the same server
+
 connectDB()
   .then(() => {
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(`\n🚀 Kaaryo API running on http://localhost:${PORT}\n`);
     });
+    // Start the dispatch sweeper (expands radius / expires unaccepted requests).
+    dispatchService.startSweeper();
   })
   .catch((err) => {
     console.error('❌ Failed to start server:', err.message);
