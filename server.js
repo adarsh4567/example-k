@@ -15,6 +15,7 @@ const placesRoutes = require('./src/routes/placesRoutes');
 const profileRoutes = require('./src/routes/profileRoutes');
 const serviceRequestRoutes = require('./src/routes/serviceRequestRoutes');
 const jobsRoutes = require('./src/routes/jobsRoutes');
+const earningsRoutes = require('./src/routes/earningsRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const dispatchService = require('./src/services/dispatchService');
 const socket = require('./src/realtime/socket');
@@ -51,6 +52,7 @@ app.use('/api/places', placesRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/service-requests', serviceRequestRoutes);
 app.use('/api/jobs', jobsRoutes);
+app.use('/api/earnings', earningsRoutes);
 app.use('/api/admin', adminRoutes);
 
 // 404 + error handling

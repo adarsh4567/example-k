@@ -59,22 +59,37 @@ async function availableJobs(req, res, next) {
   }
 }
 
+// The date a "past" job should be ordered by for history: when it actually
+// finished, whichever way it finished (completed/cancelled/expired).
+function historySortDate(r) {
+  return r.completedAt || r.cancelledAt || r.expiredAt || r.updatedAt;
+}
+
 // GET /api/jobs/mine  — the worker's active + past jobs
 async function myJobs(req, res, next) {
   try {
     const worker = req.worker;
+    // updatedAt is a reasonable recency proxy at the DB level for the initial
+    // fetch+limit; exact ordering within active/history is enforced below.
     const requests = await ServiceRequest.find({ acceptedBy: worker._id })
-      .sort({ acceptedAt: -1 })
+      .sort({ updatedAt: -1 })
       .limit(50);
+
     // pending_rating stays "active" (not history) — the worker still owes a
     // rating before the job is done. This also lets the app re-show the
     // rating card on resume if it was killed before the rating was submitted.
     const active = requests
       .filter((r) => r.status === 'in_progress' || r.status === 'pending_rating')
+      .sort((a, b) => new Date(b.acceptedAt) - new Date(a.acceptedAt))
       .map(assignedView);
+
+    // Newest-first by completedAt — this is what "Recent Transactions" (the
+    // first 5 entries) relies on to show recent jobs, not arbitrary ones.
     const history = requests
       .filter((r) => ['completed', 'cancelled', 'expired'].includes(r.status))
+      .sort((a, b) => new Date(historySortDate(b)) - new Date(historySortDate(a)))
       .map(assignedView);
+
     return ok(res, { active, history }, 'Your jobs');
   } catch (err) {
     next(err);
