@@ -221,8 +221,10 @@ async function declineRequest(requestId, worker) {
   return { ok: true, request };
 }
 
-// Assigned worker completes the job.
-async function completeRequest(requestId, worker) {
+// Worker marks the on-site work done. This does NOT complete the job — it
+// moves to pending_rating and the worker stays bound (blocked from new
+// offers) until they submit a rating via rateJob().
+async function markWorkDone(requestId, worker) {
   const request = await ServiceRequest.findById(requestId);
   if (!request) return { ok: false, code: 404, reason: 'Request not found' };
   if (String(request.acceptedBy) !== String(worker._id)) {
@@ -231,6 +233,36 @@ async function completeRequest(requestId, worker) {
   if (request.status !== 'in_progress') {
     return { ok: false, code: 409, reason: `Cannot complete a ${request.status} job` };
   }
+  request.status = 'pending_rating';
+  request.workDoneAt = new Date();
+  await request.save();
+  return { ok: true, request };
+}
+
+// Worker submits their 1-5 rating for the job — this is what actually
+// finalizes completion (frees the worker + bumps jobsCompleted).
+async function rateJob(requestId, worker, rating) {
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return { ok: false, code: 422, reason: 'Rating must be a whole number between 1 and 5' };
+  }
+
+  const request = await ServiceRequest.findById(requestId);
+  if (!request) return { ok: false, code: 404, reason: 'Request not found' };
+  if (String(request.acceptedBy) !== String(worker._id)) {
+    return { ok: false, code: 403, reason: 'This job is not assigned to you' };
+  }
+  if (request.status !== 'pending_rating') {
+    return {
+      ok: false,
+      code: 409,
+      reason: request.status === 'completed'
+        ? 'You already rated this job'
+        : `Mark the job complete before rating it (current status: ${request.status})`,
+    };
+  }
+
+  request.jobRating = rating;
+  request.ratedAt = new Date();
   request.status = 'completed';
   request.completedAt = new Date();
   await request.save();
@@ -247,6 +279,9 @@ async function completeRequest(requestId, worker) {
 async function cancelRequest(requestId) {
   const request = await ServiceRequest.findById(requestId);
   if (!request) return { ok: false, code: 404, reason: 'Request not found' };
+  if (request.status === 'pending_rating') {
+    return { ok: false, code: 409, reason: 'Work is already done for this job — it just needs the worker\'s rating to finalize, so it can no longer be cancelled' };
+  }
   if (['completed', 'cancelled', 'expired'].includes(request.status)) {
     return { ok: false, code: 409, reason: `Request already ${request.status}` };
   }
@@ -303,7 +338,8 @@ module.exports = {
   startDispatch,
   acceptRequest,
   declineRequest,
-  completeRequest,
+  markWorkDone,
+  rateJob,
   cancelRequest,
   findNearbyWorkers,
   startSweeper,

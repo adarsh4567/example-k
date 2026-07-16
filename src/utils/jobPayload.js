@@ -23,6 +23,8 @@ function offerView(request, workerId) {
 }
 
 // Full view of a job assigned to the worker (reveals customer contact).
+// `jobRating` is the worker's own 1-5 rating for this job — null until they
+// submit it (status pending_rating), then shown on every completed job in history.
 function assignedView(request) {
   return {
     id: request._id,
@@ -35,7 +37,9 @@ function assignedView(request) {
     customer: { name: request.customer.name, phone: request.customer.phone },
     customerRating: request.customerRating,
     pricing: request.pricing,
+    jobRating: request.jobRating,
     acceptedAt: request.acceptedAt,
+    workDoneAt: request.workDoneAt,
     completedAt: request.completedAt,
   };
 }

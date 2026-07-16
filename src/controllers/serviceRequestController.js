@@ -35,7 +35,7 @@ async function customerView(request) {
     createdAt: request.createdAt,
   };
 
-  if (request.status === 'in_progress' || request.status === 'completed') {
+  if (['in_progress', 'pending_rating', 'completed'].includes(request.status)) {
     const worker = await Worker.findById(request.acceptedBy)
       .select('fullName phone rating jobsCompleted currentLocation');
     if (worker) {

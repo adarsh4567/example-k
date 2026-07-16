@@ -66,8 +66,15 @@ async function myJobs(req, res, next) {
     const requests = await ServiceRequest.find({ acceptedBy: worker._id })
       .sort({ acceptedAt: -1 })
       .limit(50);
-    const active = requests.filter((r) => r.status === 'in_progress').map(assignedView);
-    const history = requests.filter((r) => r.status !== 'in_progress').map(assignedView);
+    // pending_rating stays "active" (not history) — the worker still owes a
+    // rating before the job is done. This also lets the app re-show the
+    // rating card on resume if it was killed before the rating was submitted.
+    const active = requests
+      .filter((r) => r.status === 'in_progress' || r.status === 'pending_rating')
+      .map(assignedView);
+    const history = requests
+      .filter((r) => ['completed', 'cancelled', 'expired'].includes(r.status))
+      .map(assignedView);
     return ok(res, { active, history }, 'Your jobs');
   } catch (err) {
     next(err);
@@ -97,16 +104,35 @@ async function declineJob(req, res, next) {
 }
 
 // POST /api/jobs/:id/complete
+// Marks the on-site work done. The job is NOT finished yet — it moves to
+// pending_rating and the app should immediately show the rating card.
 async function completeJob(req, res, next) {
   try {
-    const result = await dispatch.completeRequest(req.params.id, req.worker);
+    const result = await dispatch.markWorkDone(req.params.id, req.worker);
     if (!result.ok) return fail(res, result.reason, result.code || 400);
-    return ok(res, { job: assignedView(result.request) }, 'Job completed');
+    return ok(
+      res,
+      { job: assignedView(result.request) },
+      'Work marked as done — please rate this job to finish'
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/jobs/:id/rate  { rating: 1-5 }
+// This is what actually completes the job (frees the worker for new offers).
+async function rateJob(req, res, next) {
+  try {
+    const { rating } = req.body;
+    const result = await dispatch.rateJob(req.params.id, req.worker, Number(rating));
+    if (!result.ok) return fail(res, result.reason, result.code || 400);
+    return ok(res, { job: assignedView(result.request) }, 'Job completed — thanks for your rating');
   } catch (err) {
     next(err);
   }
 }
 
 module.exports = {
-  updateAvailability, availableJobs, myJobs, acceptJob, declineJob, completeJob,
+  updateAvailability, availableJobs, myJobs, acceptJob, declineJob, completeJob, rateJob,
 };
