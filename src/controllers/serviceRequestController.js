@@ -3,7 +3,10 @@ const Worker = require('../models/Worker');
 const { ok, fail } = require('../utils/response');
 const { isValidPhone } = require('../utils/validators');
 const { isValidCategory, isValidSubcategory } = require('../services/serviceCatalog');
+const { computePriceBreakdown } = require('../services/pricingService');
 const dispatch = require('../services/dispatchService');
+
+const JOB_DESCRIPTION_MAX_LENGTH = 500;
 
 function validCoord(lat, lng) {
   return (
@@ -19,6 +22,11 @@ async function customerView(request) {
     status: request.status,
     category: request.category,
     subcategory: request.subcategory,
+    jobDescription: request.jobDescription,
+    // Customer sees only the total they'll pay — the platform/worker split is
+    // worker- and platform-internal, not shown here.
+    totalPrice: request.pricing ? request.pricing.totalPrice : null,
+    currency: request.pricing ? request.pricing.currency : null,
     address: request.address,
     location: request.location,
     radiusKm: request.radiusKm,
@@ -50,16 +58,20 @@ async function customerView(request) {
 }
 
 // POST /api/service-requests
-// { customerName, customerPhone, category, subcategory?, lat, lng, address?, radiusKm? }
+// { customerName, customerPhone, category, subcategory?, jobDescription, lat, lng, address?, radiusKm? }
 async function createRequest(req, res, next) {
   try {
-    const { customerName, customerPhone, category, subcategory, lat, lng, address, radiusKm } = req.body;
+    const { customerName, customerPhone, category, subcategory, jobDescription, lat, lng, address, radiusKm } = req.body;
 
     if (!customerName || !customerName.trim()) return fail(res, 'customerName is required', 422);
     if (!isValidPhone(customerPhone)) return fail(res, 'A valid 10-digit customerPhone is required', 422);
     if (!isValidCategory(category)) return fail(res, `Invalid service category: ${category}`, 422);
     if (subcategory && !isValidSubcategory(category, subcategory)) {
       return fail(res, `Invalid subcategory "${subcategory}" for category "${category}"`, 422);
+    }
+    if (!jobDescription || !jobDescription.trim()) return fail(res, 'jobDescription is required', 422);
+    if (jobDescription.trim().length > JOB_DESCRIPTION_MAX_LENGTH) {
+      return fail(res, `jobDescription must be under ${JOB_DESCRIPTION_MAX_LENGTH} characters`, 422);
     }
     if (!validCoord(Number(lat), Number(lng))) {
       return fail(res, 'Valid numeric lat and lng are required', 422);
@@ -69,6 +81,10 @@ async function createRequest(req, res, next) {
       customer: { name: customerName.trim(), phone: String(customerPhone) },
       category,
       subcategory: subcategory || null,
+      jobDescription: jobDescription.trim(),
+      // Dummy rate-card pricing + dummy customer rating (schema default) — no
+      // real pricing engine or customer-rating system yet.
+      pricing: computePriceBreakdown(category),
       location: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
       address: address || '',
       status: 'searching',

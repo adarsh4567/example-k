@@ -127,7 +127,9 @@ Subscribe to the server → worker events. Manage a list of open offers in state
 | `job:taken` | `{ id }` | remove that offer (someone else won) |
 | `job:expired` | `{ id }` | remove that offer (nobody took it in time) |
 
-`offer` = `{ id, category, subcategory, address, distanceKm, customerName, status, wave, offeredAt }` — **customer phone is hidden until you accept.**
+`offer` = `{ id, category, subcategory, jobDescription, address, distanceKm, customerName, customerRating, pricing, status, wave, offeredAt }` — **customer phone is hidden until you accept.**
+
+`jobDescription` is what the customer typed — show it verbatim on the offer card. `customerRating` (fixed `4.6` for now — no rating system yet) and `pricing` (`{ currency, totalPrice, platformFeePercent, platformFee, workerEarning }`, dummy rate-card per category) are what the worker uses to decide whether to accept — **lead with `pricing.workerEarning`** ("You'll earn ₹270") since that's the number that drives the accept decision, and show `customerRating` next to the customer's name.
 
 ```js
 import React, { createContext, useContext, useEffect, useState } from 'react';
@@ -190,16 +192,32 @@ export function declineJob(requestId) {
 }
 ```
 
-Usage in an offer card:
-```js
-const onAccept = async () => {
-  const res = await acceptJob(offer.id);
-  if (res.ok) {
-    navigation.navigate('ActiveJob', { job: res.job }); // customer name + phone now available
-  } else {
-    Alert.alert('Missed it', res.message);               // job:taken already removed the card
-  }
-};
+Usage in an offer card — show the price/description/rating so the worker can decide, then accept:
+```jsx
+function OfferCard({ offer, onAccepted }) {
+  const onAccept = async () => {
+    const res = await acceptJob(offer.id);
+    if (res.ok) {
+      onAccepted(res.job); // customer name + phone now available; pricing carries through unchanged
+    } else {
+      Alert.alert('Missed it', res.message); // job:taken already removed the card
+    }
+  };
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.category}>{offer.category} · {offer.subcategory}</Text>
+      <Text style={styles.description}>{offer.jobDescription}</Text>
+      <Text style={styles.distance}>{offer.distanceKm} km away</Text>
+      <Text style={styles.customer}>{offer.customerName} ★ {offer.customerRating}</Text>
+      <Text style={styles.earning}>You'll earn ₹{offer.pricing.workerEarning}</Text>
+      <Text style={styles.breakdown}>
+        (Job total ₹{offer.pricing.totalPrice} · platform fee {offer.pricing.platformFeePercent}%)
+      </Text>
+      <Button title="Accept" onPress={onAccept} />
+    </View>
+  );
+}
 ```
 
 ---

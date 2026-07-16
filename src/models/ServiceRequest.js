@@ -38,6 +38,24 @@ const serviceRequestSchema = new mongoose.Schema(
     category: { type: String, required: true },     // e.g. 'cleaning'
     subcategory: { type: String, default: null },   // optional, e.g. 'kitchen'
 
+    // Free-text description of the job, written by the customer. The only
+    // customer-supplied field shown verbatim to the worker as-is.
+    jobDescription: { type: String, required: true },
+
+    // DUMMY for now — no customer rating system exists yet. Every request
+    // carries this same placeholder so the worker sees a rating pre-accept,
+    // mirroring how ride-hailing apps show rider rating to the driver.
+    customerRating: { type: Number, default: 4.6 },
+
+    // DUMMY rate-card pricing, computed once at creation (see pricingService).
+    pricing: {
+      currency: String,
+      totalPrice: Number,
+      platformFeePercent: Number,
+      platformFee: Number,
+      workerEarning: Number,
+    },
+
     // Where the service is needed. GeoJSON Point [lng, lat].
     location: {
       type: { type: String, enum: ['Point'], default: 'Point' },

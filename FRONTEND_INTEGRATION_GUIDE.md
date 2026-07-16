@@ -1,4 +1,4 @@
-# Kaaryo Worker App — Frontend Integration Guide
+3# Kaaryo Worker App — Frontend Integration Guide
 
 Base URL: `http://16.112.18.34:4000`
 All responses follow the same envelope:
@@ -486,7 +486,24 @@ const socket = io('http://localhost:4000', { auth: { token: WORKER_JWT } });
 | `job:taken` | `{ id }` | another worker took a job you were offered — remove it from the UI |
 | `job:expired` | `{ id }` | a job you were offered expired with no taker — remove it |
 
-`offer` shape: `{ id, category, subcategory, address, distanceKm, customerName, status, wave, offeredAt }` (customer phone hidden until accept).
+`offer` shape:
+```json
+{
+  "id": "...",
+  "category": "cleaning",
+  "subcategory": "kitchen",
+  "jobDescription": "2 people, kitchen + 1 bathroom, need deep clean before a house party",
+  "address": "Flat 5B, HSR Layout",
+  "distanceKm": 1.4,
+  "customerName": "Riya",
+  "customerRating": 4.6,
+  "pricing": { "currency": "INR", "totalPrice": 300, "platformFeePercent": 10, "platformFee": 30, "workerEarning": 270 },
+  "status": "searching",
+  "wave": 1,
+  "offeredAt": "…"
+}
+```
+Customer phone is hidden until accept. `jobDescription` is the only free-text field the customer wrote — show it as-is. `customerRating` and `pricing` are **dummy for now** (fixed rate-card per category, no real pricing/rating engine yet) — show `pricing.workerEarning` prominently as "you earn ₹270" so the worker can decide before accepting; `pricing.totalPrice`/`platformFee` are there if you want to show the full breakdown too.
 
 **Worker → server events** (each takes an ack callback):
 | Emit | Payload | Ack response |
@@ -514,14 +531,10 @@ Test it without the app using the bundled CLI client: `npm run worker-client -- 
 ```
 → `{ "success": true, "message": "Availability updated", "availability": { "isOnline": true, "lastSeenAt": "...", "location": { "type": "Point", "coordinates": [77.6245, 12.9352] } } }`
 
-**`GET /api/jobs/available`** — fallback snapshot of open offers (the socket `jobs:open`/`job:offer` events are the primary path; **do not poll this**).
-```json
-{ "success": true, "jobs": [ { "id": "...", "category": "cleaning", "subcategory": "kitchen", "address": "…", "distanceKm": 1.4, "customerName": "Riya", "status": "searching", "wave": 1, "offeredAt": "…" } ] }
-```
-> Customer phone is hidden until the worker accepts.
+**`GET /api/jobs/available`** — fallback snapshot of open offers (the socket `jobs:open`/`job:offer` events are the primary path; **do not poll this**). Same `offer` shape as above (includes `jobDescription`, `customerRating`, `pricing`).
 
 **`POST /api/jobs/:id/accept`** — REST equivalent of the `job:accept` socket event. First-to-accept-wins.
-- Success `200`: `{ "success": true, "message": "Job accepted — you are now in progress", "job": { "id": "...", "status": "in_progress", "customer": { "name": "Riya", "phone": "9800000000" }, "address": "…", "location": {...}, "acceptedAt": "…" } }` (customer contact now revealed)
+- Success `200`: `{ "success": true, "message": "Job accepted — you are now in progress", "job": { "id": "...", "status": "in_progress", "category": "cleaning", "subcategory": "kitchen", "jobDescription": "…", "customer": { "name": "Riya", "phone": "9800000000" }, "customerRating": 4.6, "pricing": { "currency": "INR", "totalPrice": 300, "platformFeePercent": 10, "platformFee": 30, "workerEarning": 270 }, "address": "…", "location": {...}, "acceptedAt": "…" } }` (customer contact now revealed; pricing carries through unchanged from the offer)
 - Conflict `409`: `"This job is no longer available (already taken or expired)"` or `"You already have an active job. Complete it first."`
 
 **`POST /api/jobs/:id/decline`** — decline an offer → `200`.
@@ -539,6 +552,7 @@ Test it without the app using the bundled CLI client: `npm run worker-client -- 
   "customerPhone": "9800000000",
   "category": "cleaning",
   "subcategory": "kitchen",
+  "jobDescription": "2 people, kitchen + 1 bathroom, need deep clean before a house party",
   "lat": 12.9352,
   "lng": 77.6245,
   "address": "Flat 5B, HSR Layout",
@@ -546,8 +560,9 @@ Test it without the app using the bundled CLI client: `npm run worker-client -- 
 }
 ```
 - `subcategory` and `radiusKm` are optional (radius defaults to `DISPATCH_INITIAL_RADIUS_KM`).
-- Success `201`: `{ "success": true, "message": "Request created — notified N nearby worker(s)...", "workersNotified": N, "request": { "id": "...", "status": "searching", "radiusKm": 3, "wave": 1, "workersNotified": N, ... } }`
-- Errors `422`: missing/invalid name, phone, category, subcategory, or lat/lng.
+- `jobDescription` is **required** — free text, under 500 chars, shown to workers as-is. It's the only dynamic/customer-authored field in the price/description/rating trio; price and customer rating are dummy (see below).
+- Success `201`: `{ "success": true, "message": "Request created — notified N nearby worker(s)...", "workersNotified": N, "request": { "id": "...", "status": "searching", "jobDescription": "…", "totalPrice": 300, "currency": "INR", "radiusKm": 3, "wave": 1, "workersNotified": N, ... } }`
+- Errors `422`: missing/invalid name, phone, category, subcategory, jobDescription (missing or over 500 chars), or lat/lng.
 
 **`GET /api/service-requests/:id`** — customer polls for live status.
 ```json
@@ -558,6 +573,9 @@ Test it without the app using the bundled CLI client: `npm run worker-client -- 
     "status": "in_progress",
     "category": "cleaning",
     "subcategory": "kitchen",
+    "jobDescription": "2 people, kitchen + 1 bathroom, need deep clean before a house party",
+    "totalPrice": 300,
+    "currency": "INR",
     "radiusKm": 3,
     "wave": 1,
     "workersNotified": 4,
@@ -566,12 +584,29 @@ Test it without the app using the bundled CLI client: `npm run worker-client -- 
   }
 }
 ```
+> The customer sees `totalPrice` only — the platform/worker commission split (`pricing.platformFee`/`workerEarning`) is worker- and platform-internal and isn't included here.
+
+### Pricing & customer rating (dummy for now)
+`jobDescription` is the **only** dynamic field a customer provides for this trio — `pricing` and `customerRating` are computed from a fixed dummy rate card at request creation (see [pricingService.js](src/services/pricingService.js)), not a real pricing/rating engine:
+
+| Category | Total price (₹) | Platform fee (10%) | Worker earns |
+|---|---|---|---|
+| cleaning | 300 | 30 | 270 |
+| electrical | 400 | 40 | 360 |
+| cooking | 350 | 35 | 315 |
+| plumbing | 450 | 45 | 405 |
+| carpentry | 500 | 50 | 450 |
+| ac_repair | 600 | 60 | 540 |
+| painting | 800 | 80 | 720 |
+| pest_control | 500 | 50 | 450 |
+
+`customerRating` is a fixed `4.6` on every request. Both are computed once when the request is created and stored on it, so they stay stable through the request's lifecycle (an offer's price won't change between dispatch waves). Commission % is configurable via `PLATFORM_COMMISSION_PERCENT` in `.env`.
 `status` transitions: `searching` → `in_progress` (accepted) → `completed`; or `cancelled` / `expired`. Worker details appear once `in_progress`.
 
 **`POST /api/service-requests/:id/cancel`** — cancel a `searching` or `in_progress` request (frees the worker). `409` if already completed/cancelled/expired.
 
 ### Tunables (`.env`)
-`DISPATCH_INITIAL_RADIUS_KM` (3), `DISPATCH_RADIUS_INCREMENT_KM` (3), `DISPATCH_MAX_RADIUS_KM` (15), `DISPATCH_BATCH_SIZE` (10), `DISPATCH_WAVE_TIMEOUT_SECONDS` (30), `DISPATCH_SWEEP_INTERVAL_SECONDS` (5).
+`DISPATCH_INITIAL_RADIUS_KM` (3), `DISPATCH_RADIUS_INCREMENT_KM` (3), `DISPATCH_MAX_RADIUS_KM` (15), `DISPATCH_BATCH_SIZE` (10), `DISPATCH_WAVE_TIMEOUT_SECONDS` (30), `DISPATCH_SWEEP_INTERVAL_SECONDS` (5), `PLATFORM_COMMISSION_PERCENT` (10).
 
 ### Testing the real-time flow manually
 1. Start the server: `npm start`
