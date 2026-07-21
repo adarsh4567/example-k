@@ -542,6 +542,7 @@
           </select>
         </div>
         <button class="secondary" id="refreshBtn">↻ Refresh</button>
+        <button class="secondary" id="videoQueueBtn">🎬 Video Review Queue</button>
       </div>
 
       <div class="table-wrap">
@@ -1185,6 +1186,279 @@
       document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') closeModal();
       });
+
+      // ---------- Filter 1: Practical Video Task review ----------
+      function fmtBytes(n) {
+        if (!n) return '—';
+        var mb = n / (1024 * 1024);
+        return mb.toFixed(1) + ' MB';
+      }
+      function fmtDuration(s) {
+        if (!s) return '—';
+        var m = Math.floor(s / 60);
+        var sec = Math.round(s % 60);
+        return m + 'm ' + (sec < 10 ? '0' : '') + sec + 's';
+      }
+
+      var videoQueueBtn = document.getElementById('videoQueueBtn');
+      videoQueueBtn.addEventListener('click', openVideoQueue);
+
+      function openVideoQueue() {
+        api('/api/admin/video-review/queue')
+          .then(function (data) { renderVideoQueue(data); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      function renderVideoQueue(data) {
+        closeModal();
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>🎬 Video Review Queue (${String(data.total || 0)})</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        var workers = data.workers || [];
+        if (!workers.length) {
+          body.innerHTML = '<p style="color:var(--muted);font-size:13px;">No workers are awaiting video review.</p>';
+        } else {
+          workers.forEach(function (w) {
+            var vt = w.videoTask || {};
+            var dup = vt.duplicateSuspected
+              ? '<span class="chip" style="background:#4a1d1d;color:#ffb4b4;">⚠ possible duplicate</span>' : '';
+            var row = document.createElement('div');
+            row.className = 'detail-section';
+            row.style.cursor = 'pointer';
+            row.innerHTML = safe`
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                <div>
+                  <strong>${w.fullName || '(no name)'}</strong> — ${w.phone}<br/>
+                  <span style="color:var(--muted);font-size:12px;">${(w.location && w.location.city) || '—'} · submitted ${fmtDate(vt.submittedAt)} · attempt ${String(vt.attempt || 1)}</span>
+                </div>
+                <button class="secondary">Review →</button>
+              </div>
+              <div class="chip-row" style="margin-top:6px;">${''}</div>
+            `;
+            row.querySelector('.chip-row').innerHTML = dup;
+            row.querySelector('button').addEventListener('click', function () { openVideoReview(w._id); });
+            body.appendChild(row);
+          });
+        }
+
+        box.appendChild(header);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      function openVideoReview(workerId) {
+        api('/api/admin/video-review/' + workerId)
+          .then(function (data) { renderVideoReview(data); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      function videoCard(v) {
+        var wrap = document.createElement('div');
+        wrap.className = 'detail-section';
+        wrap.innerHTML = safe`
+          <h3>Task ${String(v.taskNumber)} — status: ${v.status}</h3>
+          <div class="kv-grid">
+            <dt>Size</dt><dd>${fmtBytes(v.fileSizeBytes)}</dd>
+            <dt>Duration</dt><dd>${fmtDuration(v.durationSeconds)}</dd>
+            <dt>Type</dt><dd>${v.fileType || '—'}</dd>
+          </div>
+        `;
+        if (v.playbackUrl) {
+          var vid = document.createElement('video');
+          vid.src = v.playbackUrl;
+          vid.controls = true;
+          vid.preload = 'metadata';
+          vid.style.width = '100%';
+          vid.style.maxHeight = '320px';
+          vid.style.marginTop = '10px';
+          vid.style.borderRadius = '8px';
+          vid.style.background = '#000';
+          wrap.appendChild(vid);
+        } else {
+          var na = document.createElement('p');
+          na.style.cssText = 'color:var(--muted);font-size:13px;';
+          na.textContent = 'Video not available.';
+          wrap.appendChild(na);
+        }
+
+        // Per-video score 1–5
+        var scoreRow = document.createElement('div');
+        scoreRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
+        var lbl = document.createElement('label');
+        lbl.textContent = 'Score (1–5)';
+        lbl.style.cssText = 'font-size:12px;color:var(--muted);';
+        var sel = document.createElement('select');
+        sel.className = 'video-score';
+        sel.dataset.task = v.taskNumber;
+        ['', '1', '2', '3', '4', '5'].forEach(function (n) {
+          var o = document.createElement('option');
+          o.value = n; o.textContent = n === '' ? '—' : n;
+          if (v.reviewerScore && String(v.reviewerScore) === n) o.selected = true;
+          sel.appendChild(o);
+        });
+        scoreRow.appendChild(lbl);
+        scoreRow.appendChild(sel);
+        wrap.appendChild(scoreRow);
+        return wrap;
+      }
+
+      function renderVideoReview(data) {
+        closeModal();
+        var w = data.worker || {};
+        var videos = data.videos || [];
+        var stage = (w.videoTask && w.videoTask.stage) || '';
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>${w.fullName || '(no name)'} — ${w.phone}</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        var meta = document.createElement('div');
+        meta.className = 'detail-section';
+        var dupWarn = (w.videoTask && w.videoTask.duplicateSuspected)
+          ? '<div style="margin-top:6px;color:#ffb4b4;">⚠ Both videos have identical size &amp; duration — possible duplicate submission.</div>' : '';
+        meta.innerHTML = safe`
+          <h3>Submission</h3>
+          <div class="kv-grid">
+            <dt>City</dt><dd>${w.city || '—'}</dd>
+            <dt>Stage</dt><dd>${stage}</dd>
+            <dt>Attempt</dt><dd>${String((w.videoTask && w.videoTask.attempt) || 1)}</dd>
+          </div>
+          <div>${''}</div>
+        `;
+        meta.querySelector('div:last-child').innerHTML = dupWarn;
+        body.appendChild(meta);
+
+        videos.forEach(function (v) { body.appendChild(videoCard(v)); });
+
+        // Notes
+        var notesSection = document.createElement('div');
+        notesSection.className = 'detail-section';
+        notesSection.innerHTML = '<h3>Reviewer notes</h3>';
+        var notes = document.createElement('textarea');
+        notes.style.cssText = 'width:100%;min-height:70px;';
+        notesSection.appendChild(notes);
+        body.appendChild(notesSection);
+
+        // Rejection reason (revealed when rejecting)
+        var rejectReasonWrap = document.createElement('div');
+        rejectReasonWrap.className = 'detail-section';
+        rejectReasonWrap.style.display = 'none';
+        rejectReasonWrap.innerHTML = '<h3>Rejection reason (required)</h3>';
+        var reasonSel = document.createElement('select');
+        reasonSel.style.width = '100%';
+        var ph = document.createElement('option');
+        ph.value = ''; ph.textContent = 'Select a reason…';
+        reasonSel.appendChild(ph);
+        (data.rejectionReasons || []).forEach(function (r) {
+          var o = document.createElement('option');
+          o.value = r.value; o.textContent = r.label;
+          reasonSel.appendChild(o);
+        });
+        rejectReasonWrap.appendChild(reasonSel);
+        body.appendChild(rejectReasonWrap);
+
+        // Footer actions
+        var footer = document.createElement('div');
+        footer.className = 'modal-footer';
+        var decidable = ['review_pending', 'under_review'].includes(stage);
+
+        function collectScores() {
+          var out = {};
+          body.querySelectorAll('.video-score').forEach(function (s) {
+            if (s.value) out['task' + s.dataset.task + 'Score'] = Number(s.value);
+          });
+          return out;
+        }
+
+        function submitDecision(payload, successMsg) {
+          var btns = footer.querySelectorAll('button');
+          btns.forEach(function (b) { b.disabled = true; });
+          api('/api/admin/video-review/' + w.id + '/decision', {
+            method: 'POST', body: JSON.stringify(payload),
+          }).then(function () {
+            toast(successMsg, 'success');
+            closeModal();
+            openVideoQueue();
+          }).catch(function (err) {
+            toast(err.message, 'error');
+            btns.forEach(function (b) { b.disabled = false; });
+          });
+        }
+
+        if (!decidable) {
+          var note = document.createElement('p');
+          note.style.cssText = 'color:var(--muted);font-size:13px;margin:0;';
+          note.textContent = 'No actions available — videos are already ' + stage + '.';
+          footer.appendChild(note);
+        } else {
+          var approveBtn = document.createElement('button');
+          approveBtn.textContent = '✓ Approve';
+          approveBtn.addEventListener('click', function () {
+            var payload = Object.assign({ decision: 'approve', notes: notes.value.trim() }, collectScores());
+            if (confirm('Approve these videos? The worker will be notified.')) {
+              submitDecision(payload, 'Videos approved');
+            }
+          });
+
+          var rejectBtn = document.createElement('button');
+          rejectBtn.className = 'danger';
+          rejectBtn.textContent = '✕ Reject';
+          rejectBtn.addEventListener('click', function () {
+            if (rejectReasonWrap.style.display === 'none') {
+              rejectReasonWrap.style.display = '';
+              rejectReasonWrap.scrollIntoView({ behavior: 'smooth' });
+              return;
+            }
+            if (!reasonSel.value) { toast('Select a rejection reason', 'error'); return; }
+            var payload = Object.assign(
+              { decision: 'reject', rejectionReason: reasonSel.value, notes: notes.value.trim() },
+              collectScores()
+            );
+            submitDecision(payload, 'Videos rejected');
+          });
+
+          footer.appendChild(approveBtn);
+          footer.appendChild(rejectBtn);
+        }
+
+        box.appendChild(header);
+        box.appendChild(body);
+        box.appendChild(footer);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
 
       // ---------- Bootstrap ----------
       var existing = loadSession();

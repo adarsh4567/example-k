@@ -142,6 +142,30 @@ const workerSchema = new mongoose.Schema(
     referralCode: String,
     submittedAt: Date,
 
+    // ── Filter 1: Practical Video Task ──
+    // High-level state of the two-video practical task. Per-video records
+    // (S3 keys, scores) live in the WorkerOnboardingVideo collection.
+    videoTask: {
+      stage: {
+        type: String,
+        enum: [
+          'not_started',        // no video work yet
+          'in_progress',        // at least one presigned URL issued
+          'review_pending',     // both videos uploaded, awaiting reviewer
+          'approved',
+          'rejected',           // rejected once — worker may re-upload
+          'permanently_rejected', // rejected twice — blocked from reapplying (see reapplyAllowedAt)
+        ],
+        default: 'not_started',
+      },
+      attempt: { type: Number, default: 1 },      // 1 = first try, 2 = re-upload
+      submittedAt: Date,                           // when both videos landed (queue sort key)
+      reviewedAt: Date,
+      duplicateSuspected: { type: Boolean, default: false }, // same size+duration for both tasks
+      reapplyAllowedAt: Date,                      // set 60d out on permanent rejection
+      staleAlerted: { type: Boolean, default: false }, // reviewer-SLA alert already sent
+    },
+
     // ── Profile (editable anytime, post-onboarding) ──
     // Services the worker offers. Backfilled from work.cleaningTypes when empty.
     expertise: [expertiseSchema],
