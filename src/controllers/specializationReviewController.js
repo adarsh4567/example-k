@@ -8,16 +8,29 @@ const { ok, fail } = require('../utils/response');
 // Grant the specialization on the worker: add the subcategory to their active
 // expertise (creating the category entry if needed) and keep the onboarding
 // cleaningTypes mirror consistent, exactly like PUT /api/profile/expertise.
+//
+// IMPORTANT: many workers have no explicit `expertise` array — their skills
+// resolve implicitly from `work.cleaningTypes`. We must materialise that same
+// fallback here (mirrors resolveSelections in profileController), otherwise the
+// first approval would overwrite the implicit skills and wipe them out.
 function grantSpecialization(worker, category, subcategory) {
-  if (!Array.isArray(worker.expertise)) worker.expertise = [];
-  let entry = worker.expertise.find((e) => e.category === category);
+  const current = (Array.isArray(worker.expertise) && worker.expertise.length)
+    ? worker.expertise.map((e) => ({ category: e.category, subcategories: (e.subcategories || []).slice() }))
+    : ((worker.work && worker.work.cleaningTypes && worker.work.cleaningTypes.length)
+      ? [{ category: 'cleaning', subcategories: worker.work.cleaningTypes.slice() }]
+      : []);
+
+  let entry = current.find((e) => e.category === category);
   if (!entry) {
     entry = { category, subcategories: [] };
-    worker.expertise.push(entry);
+    current.push(entry);
   }
   if (!entry.subcategories.includes(subcategory)) {
     entry.subcategories.push(subcategory);
   }
+
+  worker.expertise = current;
+
   if (category === 'cleaning') {
     if (!worker.work) worker.work = {};
     worker.work.cleaningTypes = entry.subcategories.slice();
