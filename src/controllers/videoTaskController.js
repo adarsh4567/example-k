@@ -217,7 +217,7 @@ async function confirmUpload(req, res, next) {
       worker.reviewLog.push({
         action: 'video_submitted',
         by: 'system',
-        message: vt.duplicateSuspected ? 'Possible duplicate video submission' : '',
+        message: worker.videoTask.duplicateSuspected ? 'Possible duplicate video submission' : '',
       });
       await worker.save();
     }

@@ -113,12 +113,24 @@ const isValidCategory = (key) => Object.prototype.hasOwnProperty.call(CATEGORY_M
 const isValidSubcategory = (categoryKey, subKey) =>
   isValidCategory(categoryKey) && CATEGORY_MAP[categoryKey].has(subKey);
 
+// Derive the per-subcategory status the app renders. `active` always wins;
+// otherwise the latest video submission (pending / rejected) shows through.
+function deriveStatus(active, latestSubmissionStatus) {
+  if (active) return 'active';
+  if (latestSubmissionStatus === 'pending') return 'pending';
+  if (latestSubmissionStatus === 'rejected') return 'rejected';
+  return 'none';
+}
+
 /**
  * Merge the catalog with a worker's active selections.
  * @param {Array<{category:string, subcategories:string[]}>} selections
- * @returns catalog-shaped array with `active` flags on categories & subcategories.
+ * @param {Object<string, Object<string,string>>} [submissionStatusByCatSub]
+ *        Optional map category → subcategory → latest submission status
+ *        ('pending' | 'rejected'), used to annotate the `status` field.
+ * @returns catalog-shaped array with `active` flags + a `status` on each subcategory.
  */
-function buildExpertiseView(selections) {
+function buildExpertiseView(selections, submissionStatusByCatSub = {}) {
   const activeMap = {};
   (selections || []).forEach((sel) => {
     if (!sel || !isValidCategory(sel.category)) return;
@@ -129,23 +141,40 @@ function buildExpertiseView(selections) {
 
   return SERVICE_CATALOG.map((cat) => {
     const activeSubs = activeMap[cat.key] || new Set();
+    const subStatuses = submissionStatusByCatSub[cat.key] || {};
     return {
       category: cat.key,
       name: cat.name,
       color: cat.color,
       active: activeSubs.size > 0,
-      subcategories: cat.subcategories.map((s) => ({
-        key: s.key,
-        name: s.name,
-        active: activeSubs.has(s.key),
-      })),
+      subcategories: cat.subcategories.map((s) => {
+        const active = activeSubs.has(s.key);
+        return {
+          key: s.key,
+          name: s.name,
+          active,
+          status: deriveStatus(active, subStatuses[s.key]),
+        };
+      }),
     };
   });
 }
+
+const categoryName = (categoryKey) => {
+  const cat = SERVICE_CATALOG.find((c) => c.key === categoryKey);
+  return cat ? cat.name : categoryKey;
+};
+const subcategoryName = (categoryKey, subKey) => {
+  const cat = SERVICE_CATALOG.find((c) => c.key === categoryKey);
+  const sub = cat && cat.subcategories.find((s) => s.key === subKey);
+  return sub ? sub.name : subKey;
+};
 
 module.exports = {
   SERVICE_CATALOG,
   isValidCategory,
   isValidSubcategory,
   buildExpertiseView,
+  categoryName,
+  subcategoryName,
 };

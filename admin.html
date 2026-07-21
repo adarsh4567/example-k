@@ -498,7 +498,8 @@
     <form id="loginForm">
       <div class="field">
         <label for="apiBase">API Base URL</label>
-        <input type="text" id="apiBase" placeholder="https://example-k.onrender.com" value="https://example-k.onrender.com" required />
+        <input type="text" id="apiBase" placeholder="http://18.60.222.145:4000" value="http://18.60.222.145:4000"
+          required />
       </div>
       <div class="field">
         <label for="email">Email</label>
@@ -543,6 +544,7 @@
         </div>
         <button class="secondary" id="refreshBtn">↻ Refresh</button>
         <button class="secondary" id="videoQueueBtn">🎬 Video Review Queue</button>
+        <button class="secondary" id="specQueueBtn">🎓 Specialization Reviews</button>
       </div>
 
       <div class="table-wrap">
@@ -1452,6 +1454,200 @@
           footer.appendChild(approveBtn);
           footer.appendChild(rejectBtn);
         }
+
+        box.appendChild(header);
+        box.appendChild(body);
+        box.appendChild(footer);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      // ---------- Add-a-specialization video review ----------
+      var specQueueBtn = document.getElementById('specQueueBtn');
+      specQueueBtn.addEventListener('click', openSpecQueue);
+
+      function openSpecQueue() {
+        api('/api/admin/specialization-submissions?status=pending')
+          .then(function (data) { renderSpecQueue(data); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      function renderSpecQueue(data) {
+        closeModal();
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>🎓 Specialization Reviews (${String(data.total || 0)})</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        var subs = data.submissions || [];
+        if (!subs.length) {
+          body.innerHTML = '<p style="color:var(--muted);font-size:13px;">No specialization videos awaiting review.</p>';
+        } else {
+          subs.forEach(function (s) {
+            var w = s.worker || {};
+            var row = document.createElement('div');
+            row.className = 'detail-section';
+            row.innerHTML = safe`
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                <div>
+                  <strong>${w.fullName || '(no name)'}</strong> — ${w.phone || ''}<br/>
+                  <span style="color:var(--muted);font-size:12px;">${s.categoryName} · ${s.subcategoryName} · ${(w.city || '—')} · ${fmtDate(s.createdAt)}</span>
+                </div>
+                <button class="secondary">Review →</button>
+              </div>
+            `;
+            row.querySelector('button').addEventListener('click', function () { openSpecReview(s); });
+            body.appendChild(row);
+          });
+        }
+
+        box.appendChild(header);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      function openSpecReview(s) {
+        // Fetch a fresh presigned playback URL, then render the review modal.
+        api('/api/admin/specialization-submissions/' + s.id + '/video')
+          .then(function (data) { renderSpecReview(s, data.url); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      function renderSpecReview(s, playbackUrl) {
+        closeModal();
+        var w = s.worker || {};
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>${w.fullName || '(no name)'} — ${s.subcategoryName}</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        var meta = document.createElement('div');
+        meta.className = 'detail-section';
+        meta.innerHTML = safe`
+          <h3>Submission</h3>
+          <div class="kv-grid">
+            <dt>Worker</dt><dd>${w.fullName || '—'} (${w.phone || '—'})</dd>
+            <dt>City</dt><dd>${w.city || '—'}</dd>
+            <dt>Specialization</dt><dd>${s.categoryName} · ${s.subcategoryName}</dd>
+            <dt>Duration</dt><dd>${fmtDuration(s.durationSeconds)}</dd>
+            <dt>Size</dt><dd>${fmtBytes(s.fileSizeBytes)}</dd>
+          </div>
+        `;
+        body.appendChild(meta);
+
+        var playerWrap = document.createElement('div');
+        playerWrap.className = 'detail-section';
+        playerWrap.innerHTML = '<h3>Demo video</h3>';
+        if (playbackUrl) {
+          var vid = document.createElement('video');
+          vid.src = playbackUrl;
+          vid.controls = true;
+          vid.preload = 'metadata';
+          vid.style.cssText = 'width:100%;max-height:340px;border-radius:8px;background:#000;';
+          playerWrap.appendChild(vid);
+        } else {
+          playerWrap.innerHTML += '<p style="color:var(--muted);font-size:13px;">Video not available.</p>';
+        }
+        body.appendChild(playerWrap);
+
+        var notesSection = document.createElement('div');
+        notesSection.className = 'detail-section';
+        notesSection.innerHTML = '<h3>Reviewer notes</h3>';
+        var notes = document.createElement('textarea');
+        notes.style.cssText = 'width:100%;min-height:60px;';
+        notesSection.appendChild(notes);
+        body.appendChild(notesSection);
+
+        // Rejection reason (revealed when rejecting)
+        var reasonWrap = document.createElement('div');
+        reasonWrap.className = 'detail-section';
+        reasonWrap.style.display = 'none';
+        reasonWrap.innerHTML = '<h3>Rejection reason (required)</h3>';
+        var reasonInput = document.createElement('textarea');
+        reasonInput.style.cssText = 'width:100%;min-height:50px;';
+        reasonInput.placeholder = 'e.g. Video does not clearly show the task';
+        reasonWrap.appendChild(reasonInput);
+        body.appendChild(reasonWrap);
+
+        var footer = document.createElement('div');
+        footer.className = 'modal-footer';
+
+        function submitDecision(path, payload, successMsg) {
+          var btns = footer.querySelectorAll('button');
+          btns.forEach(function (b) { b.disabled = true; });
+          api(path, { method: 'POST', body: JSON.stringify(payload) })
+            .then(function () {
+              toast(successMsg, 'success');
+              closeModal();
+              openSpecQueue();
+            })
+            .catch(function (err) {
+              toast(err.message, 'error');
+              btns.forEach(function (b) { b.disabled = false; });
+            });
+        }
+
+        var approveBtn = document.createElement('button');
+        approveBtn.textContent = '✓ Approve';
+        approveBtn.addEventListener('click', function () {
+          if (confirm('Approve this specialization? The worker will gain the skill and be notified.')) {
+            submitDecision(
+              '/api/admin/specialization-submissions/' + s.id + '/approve',
+              { notes: notes.value.trim() },
+              'Specialization approved'
+            );
+          }
+        });
+
+        var rejectBtn = document.createElement('button');
+        rejectBtn.className = 'danger';
+        rejectBtn.textContent = '✕ Reject';
+        rejectBtn.addEventListener('click', function () {
+          if (reasonWrap.style.display === 'none') {
+            reasonWrap.style.display = '';
+            reasonWrap.scrollIntoView({ behavior: 'smooth' });
+            return;
+          }
+          if (!reasonInput.value.trim()) { toast('A rejection reason is required', 'error'); return; }
+          submitDecision(
+            '/api/admin/specialization-submissions/' + s.id + '/reject',
+            { reason: reasonInput.value.trim(), notes: notes.value.trim() },
+            'Specialization rejected'
+          );
+        });
+
+        footer.appendChild(approveBtn);
+        footer.appendChild(rejectBtn);
 
         box.appendChild(header);
         box.appendChild(body);

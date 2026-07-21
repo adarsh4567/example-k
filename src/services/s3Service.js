@@ -60,6 +60,14 @@ function buildVideoKey(workerId, taskNumber, contentType) {
   return `workers/${workerId}/onboarding/task${taskNumber}/${stamp}-${uuidv4()}.${ext}`;
 }
 
+// workers/{workerId}/specializations/{category}/{subcategory}/{timestamp}-{uuid}.{ext}
+// The workerId prefix is how /submit enforces ownership — never trust a client key.
+function buildSpecializationKey(workerId, category, subcategory, contentType) {
+  const ext = extForContentType(contentType);
+  const stamp = Date.now();
+  return `workers/${workerId}/specializations/${category}/${subcategory}/${stamp}-${uuidv4()}.${ext}`;
+}
+
 // Returns a temporary URL the phone PUTs the raw file to (bypasses our server).
 async function getPresignedPutUrl({ key, contentType }) {
   if (MODE === 'mock') {
@@ -127,6 +135,7 @@ module.exports = {
   PUT_URL_TTL,
   GET_URL_TTL,
   buildVideoKey,
+  buildSpecializationKey,
   getPresignedPutUrl,
   headObject,
   getPresignedGetUrl,

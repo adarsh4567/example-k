@@ -3,6 +3,23 @@ const { OPERATING_CITIES } = require('../services/placesService');
 const {
   SERVICE_CATALOG, isValidCategory, isValidSubcategory, buildExpertiseView,
 } = require('../services/serviceCatalog');
+const SpecializationSubmission = require('../models/SpecializationSubmission');
+
+// Latest submission status per (category, subcategory) for a worker, so the
+// profile can show "pending" / "rejected" pills on not-yet-active skills.
+async function buildSubmissionStatusMap(workerId) {
+  const subs = await SpecializationSubmission.find({ worker: workerId }).sort({ createdAt: -1 });
+  const map = {};
+  const seen = new Set();
+  for (const s of subs) {
+    const k = `${s.category}|${s.subcategory}`;
+    if (seen.has(k)) continue; // sorted desc → first seen is the latest
+    seen.add(k);
+    if (!map[s.category]) map[s.category] = {};
+    map[s.category][s.subcategory] = s.status;
+  }
+  return map;
+}
 
 // Resolve a worker's active expertise selections. Falls back to the onboarding
 // cleaning types when the worker has never explicitly edited their expertise.
@@ -24,8 +41,9 @@ function initial(name) {
   return name && name.trim() ? name.trim()[0].toUpperCase() : '?';
 }
 
-function buildProfilePayload(worker) {
+async function buildProfilePayload(worker) {
   const city = (worker.location && worker.location.city) || null;
+  const statusMap = await buildSubmissionStatusMap(worker._id);
   return {
     id: worker._id,
     fullName: worker.fullName || null,
@@ -39,7 +57,7 @@ function buildProfilePayload(worker) {
     rating: worker.rating,               // null => show "New"
     jobsCompleted: worker.jobsCompleted || 0,
     status: worker.status,
-    expertise: buildExpertiseView(resolveSelections(worker)),
+    expertise: buildExpertiseView(resolveSelections(worker), statusMap),
     account: {
       serviceArea: city,
       phone: formatPhone(worker.phone),
@@ -50,7 +68,7 @@ function buildProfilePayload(worker) {
 // GET /api/profile
 async function getProfile(req, res, next) {
   try {
-    return ok(res, { profile: buildProfilePayload(req.worker) }, 'Profile fetched');
+    return ok(res, { profile: await buildProfilePayload(req.worker) }, 'Profile fetched');
   } catch (err) {
     next(err);
   }
@@ -105,7 +123,7 @@ async function updateExpertise(req, res, next) {
     worker.work.cleaningTypes = cleaning ? cleaning.subcategories : [];
 
     await worker.save();
-    return ok(res, { profile: buildProfilePayload(worker) }, 'Expertise updated');
+    return ok(res, { profile: await buildProfilePayload(worker) }, 'Expertise updated');
   } catch (err) {
     next(err);
   }
@@ -134,10 +152,13 @@ async function updateProfile(req, res, next) {
     }
 
     await worker.save();
-    return ok(res, { profile: buildProfilePayload(worker) }, 'Profile updated');
+    return ok(res, { profile: await buildProfilePayload(worker) }, 'Profile updated');
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { getProfile, getCatalog, updateExpertise, updateProfile };
+module.exports = {
+  getProfile, getCatalog, updateExpertise, updateProfile,
+  buildProfilePayload, // reused by the specialization-video controller
+};
