@@ -46,6 +46,10 @@ function init(httpServer) {
 
   io.on('connection', async (socket) => {
     socket.join(emitter.room(socket.workerId));
+    console.log(`🔌 worker socket CONNECTED: ${socket.workerId} (joined room worker:${socket.workerId})`);
+    socket.on('disconnect', (reason) => {
+      console.log(`🔌 worker socket DISCONNECTED: ${socket.workerId} (${reason})`);
+    });
 
     // Send the current open offers immediately so the UI is populated without polling.
     try {
