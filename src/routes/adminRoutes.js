@@ -30,6 +30,8 @@ router.post('/specialization-submissions/:id/reject', specReview.reject);
 
 // Filter 2: Trial Job management (assign / queue / review / decide)
 router.get('/trial-queue', trial.trialQueue);
+// NOTE: keep this literal route above '/trial/:id' so it isn't captured as :id.
+router.get('/trial/nearby-workers', trial.nearbyTrialWorkers);
 router.post('/trial/assign', trial.assignTrial);
 router.get('/trial/:id', trial.getTrial);
 router.post('/trial/:id/decision', trial.decideTrial);

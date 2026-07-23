@@ -59,6 +59,62 @@ async function trialQueue(req, res, next) {
   }
 }
 
+// GET /api/admin/trial/nearby-workers?lat=..&lng=..
+// Mirrors the real dispatch geo-match, scoped to workers awaiting a trial:
+// find `pending_trial` workers whose own travel radius (location.travelRadiusKm,
+// set during onboarding) covers the user's point, measured from the worker's
+// current location. Nearest first. Workers without a current location aren't
+// geo-indexed and so can't be matched — same precondition as live dispatch.
+const DEFAULT_TRIAL_RADIUS_KM = Number(process.env.TRIAL_MATCH_DEFAULT_RADIUS_KM || 10);
+const TRIAL_MATCH_MAX_RADIUS_KM = Number(process.env.TRIAL_MATCH_MAX_RADIUS_KM || 50);
+
+async function nearbyTrialWorkers(req, res, next) {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (!validCoord(lat, lng)) return fail(res, 'Valid numeric lat and lng are required', 422);
+
+    const results = await Worker.aggregate([
+      {
+        $geoNear: {
+          near: { type: 'Point', coordinates: [lng, lat] },
+          distanceField: 'distanceMeters',
+          maxDistance: TRIAL_MATCH_MAX_RADIUS_KM * 1000, // outer bound for performance
+          spherical: true,
+          query: { status: 'pending_trial' },
+        },
+      },
+      // Enforce the worker's willingness-to-travel: the user's point must fall
+      // within the radius the worker chose (fallback to a default if unset).
+      {
+        $match: {
+          $expr: {
+            $lte: [
+              '$distanceMeters',
+              { $multiply: [{ $ifNull: ['$location.travelRadiusKm', DEFAULT_TRIAL_RADIUS_KM] }, 1000] },
+            ],
+          },
+        },
+      },
+      { $limit: 50 },
+      { $project: { fullName: 1, phone: 1, 'location.city': 1, 'location.travelRadiusKm': 1, distanceMeters: 1 } },
+    ]);
+
+    const workers = results.map((w) => ({
+      _id: w._id,
+      fullName: w.fullName,
+      phone: w.phone,
+      city: w.location && w.location.city,
+      travelRadiusKm: (w.location && w.location.travelRadiusKm) || null,
+      distanceKm: Math.round((w.distanceMeters / 1000) * 100) / 100,
+    }));
+
+    return ok(res, { workers, count: workers.length }, 'Nearby trial-eligible workers');
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /api/admin/trial/assign
 // body: { workerId, hostName, hostPhone, lat, lng, address?, category,
 //         subcategory?, jobDescription, scheduledTime? }
@@ -116,7 +172,14 @@ async function assignTrial(req, res, next) {
       rate: job.pricing,
       offerExpiresAt: job.offerExpiresAt,
     });
-    // …and fire a push (mock) in case the app is backgrounded.
+    // Observability: was a socket actually joined to the room to receive it?
+    // connected:false here means the app isn't holding a socket during the trial
+    // phase (open it right after login, not only when going online) — the emit is fine.
+    const socketConnected = await emitter.isWorkerConnected(worker._id);
+    console.log(
+      `🧪 [trial:assigned] emitted to room worker:${worker._id} · socket connected: ${socketConnected} · job ${job._id}`
+    );
+    // …and fire a push (mock) in case the app is backgrounded / socket not connected.
     await notifyWorker(worker, {
       title: 'New trial job offer 🧪',
       message: `A trial ${category} job is available. Open the app to accept before it expires.`,
@@ -200,4 +263,4 @@ async function decideTrial(req, res, next) {
   }
 }
 
-module.exports = { trialQueue, assignTrial, getTrial, decideTrial };
+module.exports = { trialQueue, nearbyTrialWorkers, assignTrial, getTrial, decideTrial };

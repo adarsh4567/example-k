@@ -288,6 +288,31 @@
       color: #b23434;
     }
 
+    .badge-pending_trial {
+      background: #e7f0ff;
+      color: #2f6feb;
+    }
+
+    .badge-trial_assigned {
+      background: #fff1e0;
+      color: #b9770e;
+    }
+
+    .badge-trial_accepted {
+      background: #f1e8ff;
+      color: #7c3aed;
+    }
+
+    .badge-trial_in_progress {
+      background: #eef0f2;
+      color: #52575e;
+    }
+
+    .badge-trial_completed {
+      background: #fff8d6;
+      color: #93750a;
+    }
+
     .empty-state {
       padding: 48px 16px;
       text-align: center;
@@ -537,6 +562,11 @@
             <option value="under_review">Under review</option>
             <option value="manual_review">Manual review</option>
             <option value="info_requested">Info requested</option>
+            <option value="pending_trial">Pending trial</option>
+            <option value="trial_assigned">Trial assigned</option>
+            <option value="trial_accepted">Trial accepted</option>
+            <option value="trial_in_progress">Trial in progress</option>
+            <option value="trial_completed">Trial completed</option>
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
             <option value="in_progress">In progress</option>
@@ -545,6 +575,7 @@
         <button class="secondary" id="refreshBtn">↻ Refresh</button>
         <button class="secondary" id="videoQueueBtn">🎬 Video Review Queue</button>
         <button class="secondary" id="specQueueBtn">🎓 Specialization Reviews</button>
+        <button class="secondary" id="trialQueueBtn">🧪 Trial Queue</button>
       </div>
 
       <div class="table-wrap">
@@ -751,6 +782,11 @@
         under_review: 'Under review',
         manual_review: 'Manual review',
         info_requested: 'Info requested',
+        pending_trial: 'Pending trial',
+        trial_assigned: 'Trial assigned',
+        trial_accepted: 'Trial accepted',
+        trial_in_progress: 'Trial in progress',
+        trial_completed: 'Trial completed',
         approved: 'Approved',
         rejected: 'Rejected',
       };
@@ -1067,7 +1103,15 @@
         footer.style.alignItems = 'stretch';
 
         var decidable = ['submitted', 'under_review', 'manual_review', 'info_requested'];
-        if (!decidable.includes(w.status)) {
+        if (w.status === 'pending_trial') {
+          // Filter 2 shortcut: assign a trial job straight from the worker detail.
+          var assignFromDetail = document.createElement('button');
+          assignFromDetail.textContent = '🧪 Assign trial job';
+          assignFromDetail.addEventListener('click', function () {
+            openAssignForm({ _id: w._id, fullName: w.fullName, phone: w.phone });
+          });
+          footer.appendChild(assignFromDetail);
+        } else if (!decidable.includes(w.status)) {
           var note = document.createElement('p');
           note.style.color = 'var(--muted)';
           note.style.fontSize = '13px';
@@ -1654,6 +1698,666 @@
         box.appendChild(footer);
         overlay.appendChild(box);
         document.body.appendChild(overlay);
+      }
+
+      // ---------- Filter 2: Trial Job management ----------
+      // Categories mirror serviceCatalog on the backend (validated server-side too).
+      var TRIAL_CATEGORIES = ['cleaning', 'electrical', 'cooking', 'plumbing', 'carpentry', 'ac_repair', 'painting', 'pest_control'];
+
+      // Mirrors config/trialQuestions.js — used to render the customer's answers readably.
+      var TRIAL_QUESTIONS = [
+        { key: 'q1', label: 'Arrived on time?', opts: { on_time: 'On time', slightly_late: 'Slightly late', very_late: 'Very late' } },
+        { key: 'q2', label: 'Presentable?', opts: { presentable: 'Presentable', average: 'Average', unkempt: 'Unkempt' } },
+        { key: 'q3', label: 'Polite?', opts: { polite: 'Polite', neutral: 'Neutral', rude: 'Rude' } },
+        { key: 'q4', label: 'Followed instructions?', opts: { yes: 'Yes, fully', partially: 'Partially', no: 'No' } },
+        { key: 'q5', label: 'Careful & thorough?', opts: { thorough: 'Thorough', acceptable: 'Acceptable', careless: 'Careless' } },
+        { key: 'q6', label: 'Came prepared?', opts: { prepared: 'Prepared', partially: 'Partially prepared', unprepared: 'Unprepared' } },
+        { key: 'q7', label: 'Overall quality?', opts: { good: 'Good', average: 'Average', poor: 'Poor' } },
+        { key: 'q8', label: 'Felt comfortable / safe?', opts: { comfortable: 'Comfortable', somewhat: 'Somewhat', uncomfortable: 'Uncomfortable' } },
+        { key: 'q9', label: 'Would book again?', opts: { yes_definitely: 'Yes, definitely', yes_maybe: 'Maybe', no: 'No' } },
+      ];
+      // Answers that force a fail (highlighted red so the reviewer sees why it's conditional).
+      var TRIAL_HARD_FAIL = { q5: 'careless', q8: 'uncomfortable', q9: 'no' };
+
+      var trialQueueBtn = document.getElementById('trialQueueBtn');
+      trialQueueBtn.addEventListener('click', openTrialQueue);
+
+      function decisionChip(decision) {
+        var map = {
+          strong_pass: ['#e3f7e9', '#1f9254', 'Strong pass'],
+          conditional: ['#fff8d6', '#93750a', 'Conditional'],
+          fail: ['#fde8e8', '#b23434', 'Fail'],
+        };
+        var m = map[decision];
+        if (!m) return '<span class="chip">no feedback yet</span>';
+        return '<span class="chip" style="background:' + m[0] + ';color:' + m[1] + ';">' + m[2] + '</span>';
+      }
+
+      function trialEarning(p) {
+        if (!p) return '—';
+        return '₹' + p.workerEarning + ' (trial rate ' + (p.trialRatePercent || '?') + '% of ₹' + (p.standardTotalPrice || p.totalPrice) + ')';
+      }
+
+      function emptyLine(text) {
+        var p = document.createElement('p');
+        p.style.cssText = 'color:var(--muted);font-size:13px;margin:0 0 8px;';
+        p.textContent = text;
+        return p;
+      }
+
+      function trialSectionTitle(text) {
+        var h = document.createElement('h3');
+        h.textContent = text;
+        h.style.cssText = 'font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin:18px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px;';
+        return h;
+      }
+
+      function trialRow(title, subtitle, actionLabel, onAction, extraHtml) {
+        var row = document.createElement('div');
+        row.className = 'detail-section';
+        row.innerHTML = safe`
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+            <div>
+              <strong>${title}</strong><br/>
+              <span style="color:var(--muted);font-size:12px;">${subtitle}</span>
+            </div>
+            <button class="secondary">${actionLabel}</button>
+          </div>
+          <div class="chip-row" style="margin-top:6px;"></div>
+        `;
+        if (extraHtml) row.querySelector('.chip-row').innerHTML = extraHtml;
+        row.querySelector('button').addEventListener('click', onAction);
+        return row;
+      }
+
+      function openTrialQueue() {
+        api('/api/admin/trial-queue')
+          .then(function (data) { renderTrialQueue(data); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      // Geo matcher: enter the user's location; show pending-trial workers whose
+      // own travel radius covers it (nearest first), then assign — the real
+      // dispatch match, applied to the directed trial offer.
+      function buildTrialGeoMatcher() {
+        var wrap = document.createElement('div');
+        wrap.className = 'detail-section';
+        wrap.innerHTML = '<h3>📍 Send a trial to a nearby worker</h3>' +
+          '<p style="font-size:12px;color:var(--muted);margin:0 0 10px;">Enter the user\'s location. Pending-trial workers whose travel radius covers this point appear below, nearest first.</p>';
+
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;';
+        var latIn = document.createElement('input');
+        latIn.type = 'number'; latIn.step = 'any'; latIn.placeholder = 'User latitude (e.g. 12.9716)';
+        latIn.style.cssText = 'flex:1;min-width:160px;';
+        var lngIn = document.createElement('input');
+        lngIn.type = 'number'; lngIn.step = 'any'; lngIn.placeholder = 'User longitude (e.g. 77.5946)';
+        lngIn.style.cssText = 'flex:1;min-width:160px;';
+        var findBtn = document.createElement('button');
+        findBtn.textContent = 'Find nearby workers';
+        row.appendChild(latIn); row.appendChild(lngIn); row.appendChild(findBtn);
+        wrap.appendChild(row);
+
+        var results = document.createElement('div');
+        results.style.marginTop = '12px';
+        wrap.appendChild(results);
+
+        findBtn.addEventListener('click', function () {
+          var lat = Number(latIn.value), lng = Number(lngIn.value);
+          if (latIn.value === '' || lngIn.value === '' || isNaN(lat) || isNaN(lng)) {
+            toast('Enter a valid user latitude and longitude', 'error'); return;
+          }
+          results.innerHTML = '<p style="color:var(--muted);font-size:13px;">Searching…</p>';
+          api('/api/admin/trial/nearby-workers?lat=' + lat + '&lng=' + lng)
+            .then(function (data) {
+              var ws = data.workers || [];
+              results.innerHTML = '';
+              var head = document.createElement('div');
+              head.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:8px;';
+              head.textContent = ws.length + ' worker(s) can serve this location';
+              results.appendChild(head);
+              if (!ws.length) {
+                results.appendChild(emptyLine('No pending-trial worker covers this location (they may not have shared their current location yet).'));
+                return;
+              }
+              ws.forEach(function (wk) {
+                results.appendChild(trialRow(
+                  (wk.fullName || '(no name)') + ' — ' + (wk.phone || ''),
+                  (wk.city || '—') + ' · ' + wk.distanceKm + ' km away · covers ' + (wk.travelRadiusKm || '?') + ' km',
+                  'Assign →',
+                  function () { openAssignForm({ _id: wk._id, fullName: wk.fullName, phone: wk.phone }, { lat: lat, lng: lng }); }
+                ));
+              });
+            })
+            .catch(function (err) { results.innerHTML = ''; toast(err.message, 'error'); });
+        });
+
+        return wrap;
+      }
+
+      function renderTrialQueue(data) {
+        closeModal();
+        var counts = data.counts || {};
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>🧪 Trial Queue</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        // 0. Geo matcher — assign based on the user's location + worker travel radius.
+        body.appendChild(buildTrialGeoMatcher());
+
+        // 1. Conditional verdicts that need a human decision.
+        body.appendChild(trialSectionTitle('Awaiting your decision · ' + (counts.awaitingDecision || 0)));
+        var ad = data.awaitingDecision || [];
+        if (!ad.length) body.appendChild(emptyLine('Nothing needs a manual decision right now.'));
+        else ad.forEach(function (job) {
+          var w = job.worker || {};
+          body.appendChild(trialRow(
+            (w.fullName || '(no name)') + ' — ' + (w.phone || ''),
+            job.category + (job.subcategory ? ' · ' + job.subcategory : '') + ' · completed ' + fmtDate(job.completedAt),
+            'Review →',
+            function () { openTrialDecision(job.id); },
+            decisionChip(job.feedback && job.feedback.decision)
+          ));
+        });
+
+        // 2. Completed, customer feedback not in yet (grab the link to submit a demo).
+        body.appendChild(trialSectionTitle('Awaiting customer feedback · ' + (counts.awaitingFeedback || 0)));
+        var af = data.awaitingFeedback || [];
+        if (!af.length) body.appendChild(emptyLine('No trials waiting on feedback.'));
+        else af.forEach(function (job) {
+          var w = job.worker || {};
+          body.appendChild(trialRow(
+            (w.fullName || '(no name)') + ' — ' + (w.phone || ''),
+            job.category + ' · completed ' + fmtDate(job.completedAt),
+            '🗒 Submit feedback →',
+            function () { openFeedbackForm(job.id); }
+          ));
+        });
+
+        // 3. Workers who cleared review and are waiting to be assigned a trial.
+        body.appendChild(trialSectionTitle('Waiting for a trial · ' + (counts.pendingTrial || 0)));
+        var pt = data.pendingTrial || [];
+        if (!pt.length) body.appendChild(emptyLine('No workers are waiting for a trial.'));
+        else pt.forEach(function (w) {
+          body.appendChild(trialRow(
+            (w.fullName || '(no name)') + ' — ' + (w.phone || ''),
+            ((w.location && w.location.city) || '—') + ' · waiting since ' + fmtDate(w.updatedAt),
+            'Assign →',
+            function () { openAssignForm({ _id: w._id, fullName: w.fullName, phone: w.phone }); }
+          ));
+        });
+
+        box.appendChild(header);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      // ---- Assign a trial job ----
+      function trialField(labelText, control, hint) {
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px;';
+        var label = document.createElement('label');
+        label.textContent = labelText;
+        label.style.cssText = 'font-size:12px;font-weight:600;color:var(--muted);';
+        wrap.appendChild(label);
+        wrap.appendChild(control);
+        if (hint) {
+          var h = document.createElement('span');
+          h.textContent = hint;
+          h.style.cssText = 'font-size:11px;color:var(--muted);';
+          wrap.appendChild(h);
+        }
+        return wrap;
+      }
+
+      function openAssignForm(worker, prefill) {
+        prefill = prefill || {};
+        closeModal();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>🧪 Assign trial — ${worker.fullName || '(no name)'} · ${worker.phone || ''}</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        var hostName = document.createElement('input');
+        hostName.type = 'text'; hostName.placeholder = 'e.g. Demo Host';
+        var hostPhone = document.createElement('input');
+        hostPhone.type = 'text'; hostPhone.placeholder = 'e.g. 9111111111';
+
+        var category = document.createElement('select');
+        TRIAL_CATEGORIES.forEach(function (c) {
+          var o = document.createElement('option');
+          o.value = c; o.textContent = c;
+          category.appendChild(o);
+        });
+        var subcategory = document.createElement('input');
+        subcategory.type = 'text'; subcategory.placeholder = 'optional, e.g. kitchen';
+
+        var jobDescription = document.createElement('textarea');
+        jobDescription.placeholder = 'What the trial job involves';
+
+        var address = document.createElement('input');
+        address.type = 'text'; address.placeholder = 'e.g. 1 Demo St';
+
+        var lat = document.createElement('input');
+        lat.type = 'number'; lat.step = 'any'; lat.placeholder = '12.9716';
+        var lng = document.createElement('input');
+        lng.type = 'number'; lng.step = 'any'; lng.placeholder = '77.5946';
+        // Prefilled with the matched user location when opened from the geo matcher.
+        if (prefill.lat !== undefined && prefill.lat !== null) lat.value = prefill.lat;
+        if (prefill.lng !== undefined && prefill.lng !== null) lng.value = prefill.lng;
+
+        var scheduledTime = document.createElement('input');
+        scheduledTime.type = 'datetime-local';
+
+        [hostName, hostPhone, category, subcategory, jobDescription, address, lat, lng, scheduledTime].forEach(function (el) {
+          el.style.width = '100%';
+        });
+
+        body.appendChild(trialField('Host name *', hostName));
+        body.appendChild(trialField('Host phone *', hostPhone));
+        body.appendChild(trialField('Category *', category));
+        body.appendChild(trialField('Subcategory', subcategory));
+        body.appendChild(trialField('Job description *', jobDescription));
+        body.appendChild(trialField('Address', address));
+        body.appendChild(trialField('Latitude *', lat));
+        body.appendChild(trialField('Longitude *', lng));
+        body.appendChild(trialField('Scheduled time', scheduledTime, 'Trial pays a subsidised rate (65% of standard) and the offer expires ~90s after assigning.'));
+
+        var footer = document.createElement('div');
+        footer.className = 'modal-footer';
+
+        var assignBtn = document.createElement('button');
+        assignBtn.textContent = '🧪 Assign trial';
+        assignBtn.addEventListener('click', function () {
+          var payload = {
+            workerId: worker._id,
+            hostName: hostName.value.trim(),
+            hostPhone: hostPhone.value.trim(),
+            category: category.value,
+            subcategory: subcategory.value.trim() || undefined,
+            jobDescription: jobDescription.value.trim(),
+            address: address.value.trim(),
+            lat: Number(lat.value),
+            lng: Number(lng.value),
+            scheduledTime: scheduledTime.value ? new Date(scheduledTime.value).toISOString() : undefined,
+          };
+          if (!payload.hostName || !payload.hostPhone) { toast('Host name and phone are required', 'error'); return; }
+          if (!payload.jobDescription) { toast('Job description is required', 'error'); return; }
+          if (isNaN(payload.lat) || isNaN(payload.lng)) { toast('Valid latitude and longitude are required', 'error'); return; }
+
+          var btns = footer.querySelectorAll('button');
+          btns.forEach(function (b) { b.disabled = true; });
+          api('/api/admin/trial/assign', { method: 'POST', body: JSON.stringify(payload) })
+            .then(function () {
+              toast('Trial assigned to ' + (worker.fullName || 'worker'), 'success');
+              closeModal();
+              loadWorkers();
+            })
+            .catch(function (err) {
+              toast(err.message, 'error');
+              btns.forEach(function (b) { b.disabled = false; });
+            });
+        });
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.className = 'secondary';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', closeModal);
+
+        footer.appendChild(assignBtn);
+        footer.appendChild(cancelBtn);
+
+        box.appendChild(header);
+        box.appendChild(body);
+        box.appendChild(footer);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      // ---- Customer feedback (stands in for the not-yet-built user/customer app) ----
+      // Renders the 10-question form in-panel and submits it to the PUBLIC feedback
+      // endpoint using the job's signed one-time token — exactly what the customer
+      // app would POST. No admin-only backend endpoint needed.
+      var FEEDBACK_POSITIVE = {
+        q1: 'on_time', q2: 'presentable', q3: 'polite', q4: 'yes', q5: 'thorough',
+        q6: 'prepared', q7: 'good', q8: 'comfortable', q9: 'yes_definitely',
+      };
+
+      function openFeedbackForm(id) {
+        api('/api/admin/trial/' + id)
+          .then(function (data) {
+            var job = data.trialJob || {};
+            if (!job.feedbackLink) { toast('Feedback already submitted for this trial.', 'error'); return; }
+            renderFeedbackForm(job);
+          })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      // Turn the absolute feedbackLink into a path so api() hits this same server
+      // (the token is host-agnostic — signed server-side, not tied to the origin).
+      function feedbackPath(job) {
+        try { return new URL(job.feedbackLink).pathname; }
+        catch (e) { return job.feedbackLink.replace(/^https?:\/\/[^/]+/, ''); }
+      }
+
+      function renderFeedbackForm(job) {
+        closeModal();
+        var w = job.worker || {};
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>🗒 Customer feedback — ${w.fullName || '(no name)'}</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+        body.innerHTML = safe`
+          <p style="font-size:13px;color:var(--muted);margin-top:0;">
+            Standing in for the customer/user app. Answer as the trial host would — the decision
+            engine scores it on submit: all-positive + "definitely" ⇒ approved, any hard-fail ⇒ rejected,
+            anything else ⇒ conditional (lands back here for your manual decision).
+          </p>
+        `;
+
+        // Quick-fill helpers to speed up click-through testing.
+        var quickRow = document.createElement('div');
+        quickRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;';
+        var fillPositive = document.createElement('button');
+        fillPositive.className = 'secondary';
+        fillPositive.textContent = '✓ Fill all-positive';
+        var fillFail = document.createElement('button');
+        fillFail.className = 'secondary';
+        fillFail.textContent = '⚠ Fill a fail';
+        quickRow.appendChild(fillPositive);
+        quickRow.appendChild(fillFail);
+        body.appendChild(quickRow);
+
+        var selects = {};
+        TRIAL_QUESTIONS.forEach(function (q) {
+          var sel = document.createElement('select');
+          sel.style.width = '100%';
+          var ph = document.createElement('option');
+          ph.value = ''; ph.textContent = 'Select…';
+          sel.appendChild(ph);
+          Object.keys(q.opts).forEach(function (val) {
+            var o = document.createElement('option');
+            o.value = val; o.textContent = q.opts[val];
+            sel.appendChild(o);
+          });
+          selects[q.key] = sel;
+          body.appendChild(trialField(q.label, sel));
+        });
+
+        var comments = document.createElement('textarea');
+        comments.style.width = '100%';
+        comments.placeholder = 'Optional comments';
+        body.appendChild(trialField('Comments', comments));
+
+        fillPositive.addEventListener('click', function () {
+          Object.keys(FEEDBACK_POSITIVE).forEach(function (k) { if (selects[k]) selects[k].value = FEEDBACK_POSITIVE[k]; });
+        });
+        fillFail.addEventListener('click', function () {
+          Object.keys(FEEDBACK_POSITIVE).forEach(function (k) { if (selects[k]) selects[k].value = FEEDBACK_POSITIVE[k]; });
+          if (selects.q8) selects.q8.value = 'uncomfortable'; // any single hard-fail answer
+        });
+
+        var footer = document.createElement('div');
+        footer.className = 'modal-footer';
+
+        var submitBtn = document.createElement('button');
+        submitBtn.textContent = 'Submit feedback';
+        submitBtn.addEventListener('click', function () {
+          var answers = {};
+          var missing = null;
+          TRIAL_QUESTIONS.forEach(function (q) {
+            if (!selects[q.key].value) { missing = missing || q.label; return; }
+            answers[q.key] = selects[q.key].value;
+          });
+          if (missing) { toast('Please answer: ' + missing, 'error'); return; }
+          if (comments.value.trim()) answers.q10 = comments.value.trim();
+
+          var btns = footer.querySelectorAll('button');
+          btns.forEach(function (b) { b.disabled = true; });
+          api(feedbackPath(job), { method: 'POST', body: JSON.stringify({ answers: answers }) })
+            .then(function (res) {
+              toast('Feedback submitted — verdict: ' + (res.decision || '?'), 'success');
+              closeModal();
+              openTrialQueue();
+              loadWorkers();
+            })
+            .catch(function (err) {
+              toast(err.message, 'error');
+              btns.forEach(function (b) { b.disabled = false; });
+            });
+        });
+
+        var linkBtn = document.createElement('button');
+        linkBtn.className = 'secondary';
+        linkBtn.textContent = '🔗 Copy raw link';
+        linkBtn.addEventListener('click', function () { showLinkModal(job.feedbackLink); });
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.className = 'secondary';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', closeModal);
+
+        footer.appendChild(submitBtn);
+        footer.appendChild(linkBtn);
+        footer.appendChild(cancelBtn);
+
+        box.appendChild(header);
+        box.appendChild(body);
+        box.appendChild(footer);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      function showLinkModal(link) {
+        closeModal();
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>🔗 Customer feedback link</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+        body.innerHTML = '<p style="font-size:13px;color:var(--muted);margin-top:0;">The customer would normally receive this by SMS. For a demo, POST the 10 answers to this URL (single-use).</p>';
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.readOnly = true;
+        input.value = link;
+        input.style.width = '100%';
+        input.addEventListener('focus', function () { input.select(); });
+        body.appendChild(input);
+
+        box.appendChild(header);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        setTimeout(function () { input.focus(); }, 50);
+      }
+
+      // ---- Review a conditional trial and finalise it ----
+      function openTrialDecision(id) {
+        api('/api/admin/trial/' + id)
+          .then(function (data) { renderTrialDecision(data.trialJob); })
+          .catch(function (err) { toast(err.message, 'error'); });
+      }
+
+      function renderTrialDecision(job) {
+        closeModal();
+        var w = job.worker || {};
+        var fb = job.feedback || {};
+        var ans = fb.answers || {};
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
+
+        var box = document.createElement('div');
+        box.className = 'modal-box';
+
+        var header = document.createElement('div');
+        header.className = 'modal-header';
+        header.innerHTML = safe`<h2>Trial review — ${w.fullName || '(no name)'} · ${w.phone || ''}</h2>`;
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'ghost';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', closeModal);
+        header.appendChild(closeBtn);
+
+        var body = document.createElement('div');
+        body.className = 'modal-body';
+
+        // Job summary
+        var jobSection = document.createElement('div');
+        jobSection.className = 'detail-section';
+        jobSection.innerHTML = safe`
+          <h3>Trial job</h3>
+          <div class="kv-grid">
+            <dt>Service</dt><dd>${job.category}${job.subcategory ? ' · ' + job.subcategory : ''}</dd>
+            <dt>Description</dt><dd>${job.jobDescription}</dd>
+            <dt>Host</dt><dd>${(job.host && job.host.name) || '—'} · ${(job.host && job.host.phone) || '—'}</dd>
+            <dt>Address</dt><dd>${job.address || '—'}</dd>
+            <dt>Earning</dt><dd>${trialEarning(job.pricing)}</dd>
+            <dt>Completed</dt><dd>${fmtDate(job.completedAt)}</dd>
+          </div>
+        `;
+        body.appendChild(jobSection);
+
+        // Feedback + answers
+        var fbSection = document.createElement('div');
+        fbSection.className = 'detail-section';
+        var answersHtml = TRIAL_QUESTIONS.map(function (q) {
+          var v = ans[q.key];
+          var label = (v && q.opts[v]) || v || '—';
+          var isHard = TRIAL_HARD_FAIL[q.key] === v;
+          return '<dt>' + escapeHtml(q.label) + '</dt><dd style="' + (isHard ? 'color:var(--danger);font-weight:600;' : '') + '">' + escapeHtml(label) + '</dd>';
+        }).join('');
+        fbSection.innerHTML =
+          '<h3>Customer feedback</h3>' +
+          '<div style="margin-bottom:10px;">' + decisionChip(fb.decision) +
+          ' <span style="color:var(--muted);font-size:12px;">submitted ' + escapeHtml(fmtDate(fb.submittedAt)) + '</span></div>' +
+          '<div class="kv-grid">' + answersHtml + '</div>' +
+          '<div class="kv-grid" style="margin-top:8px;"><dt>Comments</dt><dd>' + escapeHtml(ans.q10 || '—') + '</dd></div>';
+        body.appendChild(fbSection);
+
+        // Notes
+        var notesSection = document.createElement('div');
+        notesSection.className = 'detail-section';
+        notesSection.innerHTML = '<h3>Your notes</h3>';
+        var notes = document.createElement('textarea');
+        notes.style.cssText = 'width:100%;min-height:60px;';
+        notes.placeholder = 'Optional for approve · required for reject';
+        notesSection.appendChild(notes);
+        body.appendChild(notesSection);
+
+        // Footer actions — only if the worker is still awaiting a decision.
+        var footer = document.createElement('div');
+        footer.className = 'modal-footer';
+        var awaiting = w.status === 'trial_completed';
+
+        if (!awaiting) {
+          var note = document.createElement('p');
+          note.style.cssText = 'color:var(--muted);font-size:13px;margin:0;';
+          note.textContent = 'No actions available — the worker is already ' + (STATUS_LABELS[w.status] || w.status) + '.';
+          footer.appendChild(note);
+        } else {
+          var approveBtn = document.createElement('button');
+          approveBtn.textContent = '✓ Approve';
+          approveBtn.addEventListener('click', function () {
+            if (confirm('Approve this trial? The worker becomes approved and can accept jobs.')) {
+              submitTrialDecision(job.id, { decision: 'approve', notes: notes.value.trim() }, 'Worker approved after trial', footer);
+            }
+          });
+
+          var rejectBtn = document.createElement('button');
+          rejectBtn.className = 'danger';
+          rejectBtn.textContent = '✕ Reject';
+          rejectBtn.addEventListener('click', function () {
+            if (!notes.value.trim()) { toast('A reason (notes) is required to reject', 'error'); notes.focus(); return; }
+            submitTrialDecision(job.id, { decision: 'reject', notes: notes.value.trim() }, 'Worker rejected after trial', footer);
+          });
+
+          footer.appendChild(approveBtn);
+          footer.appendChild(rejectBtn);
+        }
+
+        box.appendChild(header);
+        box.appendChild(body);
+        box.appendChild(footer);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      function submitTrialDecision(id, payload, successMsg, footer) {
+        var btns = footer.querySelectorAll('button');
+        btns.forEach(function (b) { b.disabled = true; });
+        api('/api/admin/trial/' + id + '/decision', { method: 'POST', body: JSON.stringify(payload) })
+          .then(function () {
+            toast(successMsg, 'success');
+            closeModal();
+            openTrialQueue();
+            loadWorkers();
+          })
+          .catch(function (err) {
+            toast(err.message, 'error');
+            btns.forEach(function (b) { b.disabled = false; });
+          });
       }
 
       // ---------- Bootstrap ----------
