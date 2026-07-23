@@ -3,6 +3,7 @@ const adminAuth = require('../middleware/adminAuth');
 const c = require('../controllers/adminController');
 const video = require('../controllers/videoReviewController');
 const specReview = require('../controllers/specializationReviewController');
+const trial = require('../controllers/trialAdminController');
 
 // Public
 router.post('/login', c.login);
@@ -26,5 +27,11 @@ router.get('/specialization-submissions', specReview.list);
 router.get('/specialization-submissions/:id/video', specReview.getVideo);
 router.post('/specialization-submissions/:id/approve', specReview.approve);
 router.post('/specialization-submissions/:id/reject', specReview.reject);
+
+// Filter 2: Trial Job management (assign / queue / review / decide)
+router.get('/trial-queue', trial.trialQueue);
+router.post('/trial/assign', trial.assignTrial);
+router.get('/trial/:id', trial.getTrial);
+router.post('/trial/:id/decision', trial.decideTrial);
 
 module.exports = router;

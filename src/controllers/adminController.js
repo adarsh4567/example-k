@@ -2,6 +2,8 @@ const jwt = require('jsonwebtoken');
 const Admin = require('../models/Admin');
 const Worker = require('../models/Worker');
 const { notifyWorker } = require('../services/notificationService');
+const { transitionWorker } = require('../services/workerStatusService');
+const { TRIAL_ENABLED } = require('../config/trialConfig');
 const { ok, fail } = require('../utils/response');
 
 // POST /api/admin/login  { email, password }
@@ -70,12 +72,29 @@ function ensureDecidable(worker, res) {
 }
 
 // POST /api/admin/workers/:id/approve
+// Clears application review. When the trial filter is enabled (default), this
+// does NOT fully approve the worker — it moves them to `pending_trial`, and the
+// worker only reaches `approved` after passing the trial job (Filter 2). With
+// TRIAL_ENABLED=false it keeps its legacy meaning (straight to `approved`).
 async function approveWorker(req, res, next) {
   try {
     const worker = await Worker.findById(req.params.id);
     if (!worker) return fail(res, 'Worker not found', 404);
     if (!ensureDecidable(worker, res)) return;
 
+    if (TRIAL_ENABLED) {
+      await transitionWorker(worker, 'pending_trial', {
+        actor: req.admin.email,
+        reason: req.body.message || 'Application review cleared — trial job pending',
+      });
+      await notifyWorker(worker, {
+        title: 'Application review cleared ✅',
+        message: 'Great news — the next step is a short trial job. We\'ll assign one to you shortly.',
+      });
+      return ok(res, { worker: { id: worker._id, status: worker.status } }, 'Worker moved to pending trial');
+    }
+
+    // Legacy path: no trial filter — approve directly.
     worker.status = 'approved';
     worker.reviewLog.push({ action: 'approved', by: req.admin.email, message: req.body.message || '' });
     await worker.save();

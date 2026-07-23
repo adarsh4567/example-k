@@ -12,7 +12,18 @@ const APPLICATION_STATUS = [
   'under_review',  // in admin queue
   'manual_review', // flagged (e.g. face-match failed twice)
   'info_requested',// admin asked for missing info
-  'approved',
+
+  // ── Filter 2: Trial Job ──
+  // Once application review is cleared, the worker does one subsidised trial job
+  // before being fully approved. These statuses drive the trial screens in the
+  // worker app and are set server-side only (see services/workerStatusService).
+  'pending_trial',     // cleared review, waiting for a trial job to be assigned
+  'trial_assigned',    // a trial job was offered (countdown running)
+  'trial_accepted',    // worker accepted the trial offer
+  'trial_in_progress', // worker started the trial job
+  'trial_completed',   // worker finished; awaiting customer feedback + decision
+
+  'approved',      // fully approved — can accept normal jobs (dispatch gate)
   'rejected',
 ];
 

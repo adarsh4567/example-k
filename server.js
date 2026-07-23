@@ -18,8 +18,11 @@ const jobsRoutes = require('./src/routes/jobsRoutes');
 const earningsRoutes = require('./src/routes/earningsRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const videoTaskRoutes = require('./src/routes/videoTaskRoutes');
+const trialWorkerRoutes = require('./src/routes/trialWorkerRoutes');
+const trialFeedbackRoutes = require('./src/routes/trialFeedbackRoutes');
 const dispatchService = require('./src/services/dispatchService');
 const videoJobsService = require('./src/services/videoJobsService');
+const trialJobsService = require('./src/services/trialJobsService');
 const socket = require('./src/realtime/socket');
 
 const app = express();
@@ -57,6 +60,8 @@ app.use('/api/jobs', jobsRoutes);
 app.use('/api/earnings', earningsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/worker/onboarding/video', videoTaskRoutes);
+app.use('/api/worker/trial', trialWorkerRoutes);
+app.use('/api/public/trial-feedback', trialFeedbackRoutes);
 
 // 404 + error handling
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
@@ -76,6 +81,8 @@ connectDB()
     dispatchService.startSweeper();
     // Start the video-task maintenance jobs (reconcile orphaned uploads + SLA alerts).
     videoJobsService.startSweeper();
+    // Start the trial-job sweeper (offer expiry + customer-feedback SLA).
+    trialJobsService.startSweeper();
   })
   .catch((err) => {
     console.error('❌ Failed to start server:', err.message);

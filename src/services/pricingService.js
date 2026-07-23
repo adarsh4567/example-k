@@ -13,6 +13,10 @@ const PLATFORM_COMMISSION_PERCENT = Number(process.env.PLATFORM_COMMISSION_PERCE
 const CURRENCY = 'INR';
 const DEFAULT_PRICE = Number(process.env.CATEGORY_PRICE_DEFAULT || 300);
 
+// Trial jobs pay a subsidised fraction of the standard rate (configurable,
+// never hardcoded at the call site). 65% by default.
+const TRIAL_RATE_PERCENT = Number(process.env.TRIAL_RATE_PERCENT || 65);
+
 // Hardcoded fallbacks — used only when the matching .env var is unset/invalid,
 // so a fresh clone with no .env still boots with sane demo prices.
 const DEFAULT_CATEGORY_PRICE = {
@@ -55,9 +59,30 @@ function computePriceBreakdown(category) {
   };
 }
 
+// Subsidised trial-job pricing. Discounts the standard total by TRIAL_RATE_PERCENT,
+// then re-derives the platform/worker split on the discounted total so the
+// worker still sees a correct earnings breakdown for the trial.
+function computeTrialPrice(category) {
+  const standard = computePriceBreakdown(category);
+  const totalPrice = Math.round(standard.totalPrice * (TRIAL_RATE_PERCENT / 100));
+  const platformFee = Math.round(totalPrice * (PLATFORM_COMMISSION_PERCENT / 100));
+  const workerEarning = totalPrice - platformFee;
+  return {
+    currency: CURRENCY,
+    totalPrice,
+    platformFeePercent: PLATFORM_COMMISSION_PERCENT,
+    platformFee,
+    workerEarning,
+    trialRatePercent: TRIAL_RATE_PERCENT,
+    standardTotalPrice: standard.totalPrice,
+  };
+}
+
 module.exports = {
   computePriceBreakdown,
+  computeTrialPrice,
   PLATFORM_COMMISSION_PERCENT,
+  TRIAL_RATE_PERCENT,
   CATEGORY_BASE_PRICE,
   DUMMY_CUSTOMER_RATING,
   CURRENCY,
