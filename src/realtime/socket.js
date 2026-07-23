@@ -46,7 +46,7 @@ function init(httpServer) {
 
   io.on('connection', async (socket) => {
     socket.join(emitter.room(socket.workerId));
-    console.log(`🔌 worker socket CONNECTED: ${socket.workerId} (joined room worker:${socket.workerId})`);
+    console.log(`🔌 worker socket CONNECTED: ${socket.workerId} · rooms: ${JSON.stringify([...socket.rooms])}`);
     socket.on('disconnect', (reason) => {
       console.log(`🔌 worker socket DISCONNECTED: ${socket.workerId} (${reason})`);
     });
