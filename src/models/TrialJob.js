@@ -73,15 +73,20 @@ const trialJobSchema = new mongoose.Schema(
     },
     address: { type: String, default: '' },
 
-    // Subsidised pricing, computed once at assignment (pricingService.computeTrialPrice).
+    // Trial pricing, computed once at assignment (pricingService.computeTrialPrice).
+    // basePrice → discounted userPrice (what the user pays); worker keeps the full
+    // userPrice (no commission); userWalletCredit is the user-side cashback amount.
     pricing: {
       currency: String,
-      totalPrice: Number,
+      basePrice: Number,
+      userPrice: Number,
+      totalPrice: Number,          // alias of userPrice (ServiceRequest compatibility)
+      userDiscountPercent: Number,
       platformFeePercent: Number,
       platformFee: Number,
       workerEarning: Number,
-      trialRatePercent: Number,
-      standardTotalPrice: Number,
+      userWalletCreditPercent: Number,
+      userWalletCredit: Number,
     },
 
     status: { type: String, enum: TRIAL_JOB_STATUS, default: 'assigned', index: true },
@@ -100,6 +105,12 @@ const trialJobSchema = new mongoose.Schema(
     },
 
     feedback: { type: feedbackSchema, default: () => ({}) },
+
+    // Settlement: on approval the trial is materialised as a completed
+    // ServiceRequest so it flows through the standard earnings/wallet/history
+    // pipeline (which reads ServiceRequest). Set once, guards against double-credit.
+    settledAt: { type: Date, default: null },
+    settledServiceRequest: { type: mongoose.Schema.Types.ObjectId, ref: 'ServiceRequest', default: null },
   },
   { timestamps: true }
 );

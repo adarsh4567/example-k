@@ -93,10 +93,12 @@ curl -s -X POST localhost:4000/api/admin/trial/assign \
     "category":"cleaning","subcategory":"kitchen",
     "jobDescription":"Trial kitchen clean","scheduledTime":"2026-07-24T10:00:00Z"
   }'
-# → { trialJob: { id, pricing{ totalPrice:195, ... }, offerExpiresAt } }
+# → { trialJob: { id, pricing{ basePrice:100, userPrice:60, workerEarning:60, userWalletCredit:30, ... }, offerExpiresAt } }
 ```
-Rate is auto-subsidised to `TRIAL_RATE_PERCENT` of the standard rate (65% → ₹195
-of ₹300). The worker gets a `trial:assigned` socket event + push.
+Trial economics: base `TRIAL_BASE_PRICE` (100) → user pays `TRIAL_USER_PRICE_PERCENT`
+of it (60), the **worker keeps the full 60** (no commission), and
+`TRIAL_WALLET_CASHBACK_PERCENT` of the worker earning (50% → 30) is the user's wallet
+cashback (applied on the user side). The worker gets a `trial:assigned` socket event + push.
 
 ### 4. Worker walks the flow (worker JWT)
 ```bash
@@ -173,7 +175,9 @@ placeholder; swap in the final product copy** without touching the engine.
 | Var | Default | Meaning |
 |---|---|---|
 | `TRIAL_ENABLED` | `true` | master switch for the whole filter |
-| `TRIAL_RATE_PERCENT` | `65` | trial pay as % of standard rate |
+| `TRIAL_BASE_PRICE` | `100` | trial base price per work (override one category with `TRIAL_BASE_PRICE_<CATEGORY>`) |
+| `TRIAL_USER_PRICE_PERCENT` | `60` | % of base the user sees & pays (worker keeps 100% of this) |
+| `TRIAL_WALLET_CASHBACK_PERCENT` | `50` | % of worker earning credited to the user's wallet |
 | `TRIAL_OFFER_WINDOW_SECONDS` | `90` | accept-offer countdown |
 | `TRIAL_FEEDBACK_SLA_MINUTES` | `30` | feedback reminder threshold |
 | `TRIAL_FEEDBACK_OVERDUE_HOURS` | `4` | feedback overdue → ops flag |

@@ -4,6 +4,7 @@ const { ok, fail } = require('../utils/response');
 const { isValidCategory, isValidSubcategory } = require('../services/serviceCatalog');
 const { computeTrialPrice } = require('../services/pricingService');
 const { transitionWorker } = require('../services/workerStatusService');
+const { settleApprovedTrial } = require('../services/trialSettlementService');
 const { notifyWorker } = require('../services/notificationService');
 const emitter = require('../realtime/emitter');
 const tokenService = require('../services/trialTokenService');
@@ -241,6 +242,8 @@ async function decideTrial(req, res, next) {
         reason: `Trial approved by admin${notes ? ' — ' + String(notes).trim() : ''}`,
         trialJob: job._id,
       });
+      // Credit the trial into the dashboard (wallet + jobs done + history).
+      await settleApprovedTrial(job, worker).catch((e) => console.error('[trial] settlement failed:', e.message));
       await notifyWorker(worker, {
         title: "You're approved! 🎉",
         message: 'Your trial was approved. You can now start accepting jobs on Kaaryo.',

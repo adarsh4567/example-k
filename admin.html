@@ -523,7 +523,7 @@
     <form id="loginForm">
       <div class="field">
         <label for="apiBase">API Base URL</label>
-        <input type="text" id="apiBase" placeholder="http://18.61.127.62:4000" value="http://18.61.127.62:4000"
+        <input type="text" id="apiBase" placeholder="http://40.192.18.223:4000" value="http://40.192.18.223:4000"
           required />
       </div>
       <div class="field">
@@ -648,11 +648,11 @@
       var paginationBar = document.getElementById('paginationBar');
       var toastArea = document.getElementById('toastArea');
 
-      // Default the API base to whatever origin served this page (works when hosted
-      // by the Express app itself); fall back to localhost when opened as a local file.
-      apiBaseInput.value = (window.location.origin && window.location.origin.indexOf('https') === 0)
-        ? window.location.origin
-        : 'https://example-k.onrender.com';
+      // The backend this panel talks to. IMPORTANT: it must be the SAME server the
+      // worker app connects its socket to, or real-time trial pushes (trial:assigned /
+      // worker:status_changed) fire on a different process and never reach the worker.
+      var DEFAULT_API_BASE = 'http://40.192.18.223:4000';
+      apiBaseInput.value = DEFAULT_API_BASE;
 
       // ---------- Toasts ----------
       function toast(message, type) {
@@ -1735,7 +1735,11 @@
 
       function trialEarning(p) {
         if (!p) return '—';
-        return '₹' + p.workerEarning + ' (trial rate ' + (p.trialRatePercent || '?') + '% of ₹' + (p.standardTotalPrice || p.totalPrice) + ')';
+        var userPrice = (p.userPrice != null ? p.userPrice : p.totalPrice);
+        var base = (p.basePrice != null ? p.basePrice : '?');
+        var cashback = (p.userWalletCredit != null ? p.userWalletCredit : 0);
+        return 'worker earns ₹' + p.workerEarning + ' · user pays ₹' + userPrice +
+          ' (base ₹' + base + ') · user wallet +₹' + cashback;
       }
 
       function emptyLine(text) {
@@ -1993,7 +1997,7 @@
         body.appendChild(trialField('Address', address));
         body.appendChild(trialField('Latitude *', lat));
         body.appendChild(trialField('Longitude *', lng));
-        body.appendChild(trialField('Scheduled time', scheduledTime, 'Trial pays a subsidised rate (65% of standard) and the offer expires ~90s after assigning.'));
+        body.appendChild(trialField('Scheduled time', scheduledTime, 'Trial pricing: the user pays a discounted price, the worker keeps the full amount (no commission), and the user gets wallet cashback. Offer expires ~90s after assigning.'));
 
         var footer = document.createElement('div');
         footer.className = 'modal-footer';
@@ -2363,10 +2367,13 @@
       // ---------- Bootstrap ----------
       var existing = loadSession();
       if (existing && existing.token && existing.apiBase) {
+        // Always force the configured DEFAULT_API_BASE so we don't try connecting to stale URLs from localStorage
+        existing.apiBase = DEFAULT_API_BASE;
         state.apiBase = existing.apiBase;
         state.token = existing.token;
         state.adminEmail = existing.adminEmail;
         apiBaseInput.value = existing.apiBase;
+        saveSession();
         showDashboard();
         loadWorkers();
       } else {

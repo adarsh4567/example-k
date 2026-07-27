@@ -4,6 +4,7 @@ const { ok, fail } = require('../utils/response');
 const tokenService = require('../services/trialTokenService');
 const { decide, outcomeStatusFor } = require('../services/trialDecisionService');
 const { transitionWorker } = require('../services/workerStatusService');
+const { settleApprovedTrial } = require('../services/trialSettlementService');
 const { notifyWorker } = require('../services/notificationService');
 const { TRIAL_QUESTIONS, isValidAnswer } = require('../config/trialQuestions');
 
@@ -106,6 +107,10 @@ async function submitFeedback(req, res, next) {
           reason: `Trial decision engine: ${verdict}`,
           trialJob: job._id,
         });
+        // On approval, credit the trial into the dashboard (wallet + jobs done + history).
+        if (targetStatus === 'approved') {
+          await settleApprovedTrial(job, worker).catch((e) => console.error('[trial] settlement failed:', e.message));
+        }
         await notifyWorker(worker, {
           title: targetStatus === 'approved' ? "You're approved! 🎉" : 'Trial review update',
           message:

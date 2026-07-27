@@ -114,12 +114,15 @@ Every endpoint above (except before assignment) returns the job in this shape.
   "host": { "name": "Demo Host" },
   "pricing": {
     "currency": "INR",
-    "totalPrice": 195,
-    "platformFeePercent": 10,
-    "platformFee": 20,
-    "workerEarning": 175,
-    "trialRatePercent": 65,
-    "standardTotalPrice": 300
+    "basePrice": 100,
+    "userPrice": 60,
+    "totalPrice": 60,
+    "userDiscountPercent": 40,
+    "platformFeePercent": 0,
+    "platformFee": 0,
+    "workerEarning": 60,
+    "userWalletCreditPercent": 50,
+    "userWalletCredit": 30
   },
   "offerExpiresAt": "2026-07-23T19:41:30.000Z",
   "acceptedAt": null,
@@ -128,8 +131,10 @@ Every endpoint above (except before assignment) returns the job in this shape.
 }
 ```
 
-> **Show the trial framing.** `pricing.trialRatePercent` (65) and `standardTotalPrice`
-> (300) let you say "Trial rate — you'll earn ₹175 (trials pay 65% of the normal rate)".
+> **Trial economics (worker side).** The worker keeps the **full** `pricing.workerEarning`
+> — no platform commission on a trial (`platformFee: 0`). That equals `userPrice` (what the
+> user pays). `userWalletCredit` is the user's cashback and is handled on the user side, not
+> the worker's. Lead with `workerEarning` ("You'll earn ₹60").
 
 ---
 
@@ -280,7 +285,7 @@ function TrialJobOfferScreen({ navigation }) {
       <Text style={s.addr}>{trialJob.address}</Text>
       <Text style={s.when}>Scheduled: {new Date(trialJob.scheduledTime).toLocaleString()}</Text>
       <Text style={s.earning}>You'll earn ₹{trialJob.pricing.workerEarning}</Text>
-      <Text style={s.note}>Trial rate — {trialJob.pricing.trialRatePercent}% of the normal ₹{trialJob.pricing.standardTotalPrice}</Text>
+      <Text style={s.note}>Trial job — you keep the full amount (no commission)</Text>
       <Button title="Accept trial" disabled={secondsLeft === 0} onPress={onAccept} />
       <Button title="Decline" color="#b00" onPress={onDecline} />
     </View>
