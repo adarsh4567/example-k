@@ -87,6 +87,34 @@ must be true:
    (either key works). Valid electrical skills: `wiring`, `fan_installation`,
    `switch_socket`, `appliance_repair`, `lighting`.
 
+   The response (and `GET /api/onboarding/status`) carries the step plan back, so
+   the client never has to infer it from the trade:
+
+   ```json
+   { "onboardingStep": "references", "primaryCategory": "electrical",
+     "requiresVideoTask": false, "finalGate": "shop_assessment" }
+   ```
+
+### Electricians have no skill-video step
+
+The video task (Filter 1) has **never** been part of the `onboardingStep`
+sequence — that sequence is `phone → personal → location → aadhaar → face_match
+→ work_details → references → consent → submitted`, and the video task is a
+separate post-submission flow keyed off `worker.videoTask.stage`. So:
+
+- `work-details` already advances to `references` for every trade. There was no
+  video step to skip.
+- `references` and `submit` never checked for uploaded videos, for any trade. An
+  electrician can complete onboarding end to end with nothing recorded — verified
+  by running one through all nine screens to `submitted`.
+
+What *was* missing is a server-side gate: nothing stopped an electrician entering
+the video flow, whose two tasks are cleaning-specific ("mopping a floor",
+"cleaning a bathroom sink"). All four `/api/worker/onboarding/video/*` endpoints
+now return **403** with `reason: "video_task_not_applicable"` for an electrician,
+so an older app build, a deep link or a manual API call can't put them into the
+wrong filter. Cleaning and cooking are untouched and still video-gated.
+
 2. **An admin must clear application review.** In the admin panel, open the worker
    and hit **Approve**. Because their trade is `electrical`, this moves them to
    `pending_assessment` (not `pending_trial`) and no video task is required.
@@ -422,9 +450,13 @@ Rejecting sets a 30-day reapply cooldown.
 | 26 | Two-step approval | Approve, then `POST /acknowledge-decision` | `assessment_approved` → `approved`; a second call is a no-op `200` |
 | 27 | Rejection copy | Reject, then `GET /status` | `decisionMessage` set, `improvementAreas` ≤2 items, no scores or rubric anywhere in the payload |
 | 28 | Socket delivery | Connect a socket, then book | `assessment:updated`, `assessment:status_changed` and `worker:status_changed` all arrive in the same room as `jobs:open` |
+| 29 | Electrician onboarding | Run one through all nine screens with no videos | `submit` succeeds; `requiresVideoTask: false`, `finalGate: "shop_assessment"` |
+| 30 | Video flow closed | Call any `/onboarding/video/*` endpoint as an electrician | `403`, `reason: "video_task_not_applicable"` |
+| 31 | Cleaning unaffected | Same run as a cleaner | video task still opens; approve → `pending_trial` |
 
-All 28 of these were verified against a live server during implementation
-(135 assertions, 0 failures).
+All 31 of these were verified against a live server during implementation
+(135 assertions on the assessment flow, 26 on the onboarding sequence, 0
+failures).
 
 ---
 

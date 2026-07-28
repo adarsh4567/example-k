@@ -5,6 +5,8 @@ const { requestAadhaarOtp, verifyAadhaarOtp, requestEsignOtp, verifyEsignOtp } =
 const { matchFaces } = require('../services/faceMatchService');
 const { OPERATING_CITIES } = require('../services/placesService');
 const { isValidCategory, isValidSubcategory } = require('../services/serviceCatalog');
+const { resolveWorkerCategory } = require('../utils/workerCategory');
+const { ASSESSMENT_ENABLED, ASSESSMENT_CATEGORY } = require('../config/assessmentConfig');
 
 const STEPS = Worker.STEPS;
 const nextStep = (step) => {
@@ -17,6 +19,30 @@ function advance(worker, completedStep) {
   if (STEPS.indexOf(target) > STEPS.indexOf(worker.onboardingStep)) {
     worker.onboardingStep = target;
   }
+}
+
+/**
+ * Which onboarding steps apply to this worker, and which final gate they face.
+ *
+ * Returned by the work-details and status endpoints so the client never has to
+ * infer the step plan from the trade. Note that the video task has never been
+ * part of STEPS (phone → … → work_details → references → consent → submitted) —
+ * it is a separate post-submission filter — so `steps` is the same for everyone;
+ * what differs is `requiresVideoTask` and `finalGate`.
+ */
+function stepPlanFor(worker) {
+  const category = resolveWorkerCategory(worker);
+  const isAssessment = ASSESSMENT_ENABLED && category === ASSESSMENT_CATEGORY;
+  return {
+    primaryCategory: category,
+    steps: STEPS,
+    // Electricians are assessed in person at a partner shop, so the two
+    // cleaning-specific skill videos would test the same thing twice. The video
+    // endpoints reject them outright (see routes/videoTaskRoutes).
+    requiresVideoTask: !isAssessment,
+    // The gate that stands between application approval and going live.
+    finalGate: isAssessment ? 'shop_assessment' : 'trial_job',
+  };
 }
 
 // Reject edits once the application has been submitted / decided.
@@ -273,9 +299,21 @@ async function updateWorkDetails(req, res, next) {
     }
 
     worker.work = work;
+    // Advances to `references` — the video task is not in STEPS, so an
+    // electrician needs no special-casing here to skip it.
     advance(worker, 'work_details');
     await worker.save();
-    return ok(res, { work: worker.work, onboardingStep: worker.onboardingStep }, 'Work details saved');
+    return ok(
+      res,
+      {
+        work: worker.work,
+        onboardingStep: worker.onboardingStep,
+        // The trade was only just decided on this screen, so hand the step plan
+        // back with it: the app can route straight on without re-reading status.
+        ...stepPlanFor(worker),
+      },
+      'Work details saved'
+    );
   } catch (err) {
     next(err);
   }
@@ -465,6 +503,10 @@ async function getStatus(req, res, next) {
         consent: !!(worker.consent && worker.consent.backgroundCheck),
         submitted: worker.status !== 'in_progress',
       },
+      // Which trade this worker is applying for, and therefore which post-review
+      // filter they face. Returned so the app never has to infer the step plan:
+      // electricians skip the video task entirely and are assessed in person.
+      ...stepPlanFor(worker),
       referralCode: worker.referralCode || null,
       submittedAt: worker.submittedAt || null,
     }, 'Status fetched');
