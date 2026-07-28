@@ -482,6 +482,7 @@ async function checkIn(req, res, next) {
     assessment.workerArrivedAt = now;
     assessment.checkInLocation = { type: 'Point', coordinates: [lng, lat] };
     assessment.checkInDistanceMeters = metres;
+    assessment.checkedInBy = 'worker';
     // Open the shop owner's feedback SLA window from the moment work starts.
     assessment.feedback.slaDeadlineAt = new Date(now.getTime() + FEEDBACK_SLA_MINUTES * 60 * 1000);
     await assessment.save();

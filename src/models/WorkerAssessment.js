@@ -66,6 +66,9 @@ const feedbackSchema = new mongoose.Schema(
     scoreBreakdown: { type: mongoose.Schema.Types.Mixed, default: null },
 
     submittedVia: { type: String, enum: ['web_form', 'whatsapp', 'admin', null], default: null },
+    // Set only when an admin entered the feedback on the shop owner's behalf
+    // (owner phoned it in, or has no smartphone). submittedVia is then 'admin'.
+    submittedByAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
     submittedAt: { type: Date, default: null },
 
     // SLA watcher fields (see services/assessmentJobsService).
@@ -125,6 +128,10 @@ const workerAssessmentSchema = new mongoose.Schema(
       coordinates: { type: [Number] }, // [lng, lat]
     },
     checkInDistanceMeters: { type: Number, default: null },
+    // 'worker' = the geofenced in-app check-in; 'admin' = an ops override (e.g. the
+    // worker's phone died, or ops is running the session through the panel). An
+    // admin override skips the geofence and the time window, so record which it was.
+    checkedInBy: { type: String, enum: ['worker', 'admin', null], default: null },
 
     assessmentCompletedAt: { type: Date, default: null },
     feedbackSubmittedAt: { type: Date, default: null },

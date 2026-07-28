@@ -2773,11 +2773,11 @@
       // ---------- Assessment detail + decision ----------
       function openAssessmentDetail(id) {
         api('/api/admin/assessments/' + id)
-          .then(function (data) { renderAssessmentDetail(data.assessment, data.worker); })
+          .then(function (data) { renderAssessmentDetail(data.assessment, data.worker, data.feedbackFields); })
           .catch(function (err) { toast(err.message, 'error'); });
       }
 
-      function renderAssessmentDetail(a, worker) {
+      function renderAssessmentDetail(a, worker, feedbackFields) {
         var shell = modalShell(safe`⚡ Assessment — ${(worker && worker.fullName) || 'worker'}`, { wide: true });
         var f = a.feedback || {};
         var p = a.shopPartner || {};
@@ -2870,6 +2870,73 @@
           </dl>`;
         shell.body.appendChild(paysec);
 
+        // ── Standing in for the shop owner ──
+        // The owner normally does this from the SMS link. Ops needs the same two
+        // actions in-panel for an owner who phones it in, or to walk a booking
+        // through before its date.
+        if (['booked', 'confirmed'].includes(a.status)) {
+          var arrive = document.createElement('div');
+          arrive.className = 'detail-section';
+          var future = new Date(a.scheduledAt).getTime() > Date.now();
+          arrive.innerHTML =
+            '<h3>Shop owner actions</h3>' +
+            '<p style="font-size:12px;color:var(--muted);">The worker checks in from the app, within 500 m of the shop. ' +
+            'Use these to run the session from here instead — recorded as an admin override.' +
+            (future ? ' <strong>This slot is scheduled in the future.</strong>' : '') + '</p>';
+          var arriveRow = document.createElement('div');
+          arriveRow.className = 'chip-row';
+
+          var arriveBtn = document.createElement('button');
+          arriveBtn.textContent = '✓ Mark worker arrived';
+          arriveBtn.addEventListener('click', function () {
+            if (future && !window.confirm('This slot is scheduled in the future. Mark the worker as arrived anyway?')) return;
+            arriveBtn.disabled = true;
+            api('/api/admin/assessments/' + a.id + '/mark-arrived', {
+              method: 'POST',
+              body: JSON.stringify({ note: 'via admin panel' }),
+            })
+              .then(function (res) { toast(res.message || 'Worker marked as arrived', 'success'); openAssessmentDetail(a.id); })
+              .catch(function (err) { toast(err.message, 'error'); arriveBtn.disabled = false; });
+          });
+          arriveRow.appendChild(arriveBtn);
+
+          var nsBtn = document.createElement('button');
+          nsBtn.className = 'danger';
+          nsBtn.textContent = '✕ Worker did not turn up';
+          nsBtn.addEventListener('click', function () {
+            if (!window.confirm('Mark this worker as a no-show? No payment is made for a no-show, and the slot is freed.')) return;
+            nsBtn.disabled = true;
+            // Reuses the partner endpoint via the assessment's own live token, so
+            // the no-show policy (counter, 15-day suspension, slot release) runs
+            // through exactly one implementation.
+            api('/api/admin/assessments/' + a.id)
+              .then(function (d) {
+                var tok = d.assessment.feedbackLink.split('/form/')[1];
+                return fetch(state.apiBase + '/api/partner/assessment/mark-no-show', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ assessmentToken: tok }),
+                }).then(function (r) { return r.json(); });
+              })
+              .then(function (r) {
+                if (!r || r.success !== true) throw new Error((r && r.message) || 'Could not mark no-show');
+                toast('No-show recorded', 'success');
+                closeModal();
+                openAssessmentView('all');
+              })
+              .catch(function (err) { toast(err.message, 'error'); nsBtn.disabled = false; });
+          });
+          arriveRow.appendChild(nsBtn);
+          arrive.appendChild(arriveRow);
+          shell.body.appendChild(arrive);
+        }
+
+        // The shop owner's feedback form, rendered in-panel from the server's own
+        // field definitions so it can never drift from the partner web form.
+        if (['worker_arrived', 'assessment_complete'].includes(a.status) && !f.submittedAt) {
+          shell.body.appendChild(buildAdminFeedbackForm(a, feedbackFields || [], shell));
+        }
+
         // Decision.
         if (a.status === 'feedback_submitted') {
           var dsec = document.createElement('div');
@@ -2920,6 +2987,79 @@
           done.innerHTML = safe`Decided ${a.finalDecision} on ${fmtDate(a.finalDecisionAt)}${a.finalDecisionNotes ? ' — ' + a.finalDecisionNotes : ''}`;
           shell.footer.appendChild(done);
         }
+      }
+
+      // Renders the 8-question shop-owner form from the server's field definitions
+      // (config/assessmentQuestions), so adding or rewording a question needs no
+      // change here. Submits to the admin endpoint, which runs the identical
+      // scoring / payout / transition path as the owner's own submission.
+      function buildAdminFeedbackForm(a, fields, shell) {
+        var sec = document.createElement('div');
+        sec.className = 'detail-section';
+        sec.innerHTML =
+          '<h3>Shop owner feedback</h3>' +
+          '<p style="font-size:12px;color:var(--muted);">Enter what the shop owner reported. This is recorded as ' +
+          'submitted by admin on their behalf, and releases the ₹' + escapeHtml(a.payment && a.payment.upfrontAmount) +
+          ' upfront payment.</p>';
+
+        var inputs = {};
+        fields.forEach(function (fd) {
+          var wrap = document.createElement('label');
+          wrap.className = 'field';
+          wrap.style.display = 'block';
+          var req = fd.required ? ' *' : '';
+          var help = fd.help ? safe`<br/><span style="font-size:11px;color:var(--muted);">${fd.help}</span>` : '';
+          wrap.innerHTML = safe`<span>${fd.prompt}${req}</span>` + help;
+
+          var el;
+          if (fd.type === 'boolean') {
+            el = document.createElement('select');
+            el.innerHTML =
+              '<option value="">— select —</option>' +
+              safe`<option value="true">${(fd.labels && fd.labels['true']) || 'Yes'}</option>` +
+              safe`<option value="false">${(fd.labels && fd.labels['false']) || 'No'}</option>`;
+          } else if (fd.type === 'rating') {
+            el = document.createElement('select');
+            var opts = '<option value="">— select —</option>';
+            for (var i = fd.min; i <= fd.max; i++) opts += '<option value="' + i + '">' + i + ' / ' + fd.max + '</option>';
+            el.innerHTML = opts;
+          } else if (fd.type === 'choice') {
+            el = document.createElement('select');
+            el.innerHTML = '<option value="">— select —</option>' +
+              (fd.options || []).map(function (o) { return safe`<option value="${o.value}">${o.label}</option>`; }).join('');
+          } else {
+            el = document.createElement('textarea');
+            el.rows = fd.minLength ? 3 : 2;
+          }
+          el.style.width = '100%';
+          inputs[fd.key] = el;
+          wrap.appendChild(el);
+          sec.appendChild(wrap);
+
+          // The safety question is the one answer that must not be mis-clicked.
+          if (fd.warningOnHardFail) {
+            el.addEventListener('change', function () {
+              if (el.value === 'false' && !window.confirm(fd.warningOnHardFail)) el.value = '';
+            });
+          }
+        });
+
+        var submitBtn = document.createElement('button');
+        submitBtn.textContent = 'Submit feedback';
+        submitBtn.addEventListener('click', function () {
+          var payload = {};
+          for (var k in inputs) { if (inputs[k].value !== '') payload[k] = inputs[k].value; }
+          submitBtn.disabled = true;
+          api('/api/admin/assessments/' + a.id + '/feedback', { method: 'POST', body: JSON.stringify(payload) })
+            .then(function (res) {
+              toast(res.message || 'Feedback recorded', 'success');
+              openAssessmentDetail(a.id); // reopens showing Approve / Reject
+            })
+            .catch(function (err) { toast(err.message, 'error'); submitBtn.disabled = false; });
+        });
+        shell.footer.appendChild(submitBtn);
+
+        return sec;
       }
 
       // ---------- Shop partners ----------

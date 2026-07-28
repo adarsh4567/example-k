@@ -392,6 +392,34 @@ Blocked until 15 min after the slot start (`409`). Pays nothing, ever.
   Leave the reference blank and it puts the payout through the payout service;
   enter one and it records a manual transfer.
 
+### Running the session yourself, from the panel
+
+The shop owner normally does this from their SMS link, but you can play them
+entirely in-panel — which is the only way to drive a **future-dated** booking,
+since the worker's check-in is locked to 30 minutes before the slot and to 500 m of
+the shop.
+
+Open the assessment from the queue and you'll get the right actions for its state:
+
+1. **`booked` / `confirmed`** → **Mark worker arrived** (an ops override: it skips
+   the geofence and the time window, warns you if the slot is in the future, and is
+   recorded as `checkedInBy: "admin"` so a real arrival is never confused with an
+   override). Or **Worker did not turn up**, which runs the same no-show policy as
+   the owner's own button — counter, 15-day suspension, slot released, no payment.
+2. **`worker_arrived`** → the **shop owner feedback form** appears inline, rendered
+   from the server's own field definitions, so it is the same eight questions as the
+   partner web form and can't drift from it. The safety question still asks you to
+   confirm a "No". Submitting releases the ₹300 upfront payment and is recorded as
+   `submittedVia: "admin"` with your admin id.
+3. **`feedback_submitted`** → **Approve** / **Reject** as usual. Approve issues the
+   certificate; the worker's app shows it and their Continue button finishes the
+   onboarding.
+
+Scoring, partner counters, the worker transition, notifications and the payout all
+run through one shared implementation
+([assessmentFeedbackService.js](src/services/assessmentFeedbackService.js)), so an
+admin-entered submission and an owner-entered one behave identically.
+
 There's also **⚙ Run background jobs now** in the footer — runs no-show detection,
 the feedback SLA, deferred payouts and partner quality scoring immediately instead
 of waiting for the sweeper. Use it constantly while testing.
@@ -465,10 +493,14 @@ Rejecting sets a 30-day reapply cooldown.
 | 29 | Electrician onboarding | Run one through all nine screens with no videos | `submit` succeeds; `requiresVideoTask: false`, `finalGate: "shop_assessment"` |
 | 30 | Video flow closed | Call any `/onboarding/video/*` endpoint as an electrician | `403`, `reason: "video_task_not_applicable"` |
 | 31 | Cleaning unaffected | Same run as a cleaner | video task still opens; approve → `pending_trial` |
+| 32 | Future-dated booking, driven from the panel | Book a slot >24 h out, then Mark arrived → feedback → Approve | works end to end; `checkedInBy: "admin"`, `submittedVia: "admin"`, ₹300 released, certificate issued |
+| 33 | Override is auditable | Inspect after Mark arrived | `checkedInBy: "admin"`, and no fake check-in location is written |
+| 34 | Admin path validates identically | Submit an incomplete admin form | same `422`s as the owner form (missing fields, 20-char minimum) |
+| 35 | Owner path unchanged | Submit via the token link | `submittedVia: "web_form"`, no admin attributed |
 
-All 31 of these were verified against a live server during implementation
-(135 assertions on the assessment flow, 26 on the onboarding sequence, 0
-failures).
+All 35 of these were verified against a live server during implementation
+(135 assertions on the assessment flow, 32 on the admin-driven flow, 26 on the
+onboarding sequence, 15 on shop allocation — 0 failures).
 
 ---
 
@@ -518,6 +550,9 @@ same month replaces that month's row rather than adding a duplicate.
 | GET | `/api/admin/assessments/pending-review` |
 | GET | `/api/admin/assessments?status=&partnerId=&workerId=&safetyFailed=` |
 | GET | `/api/admin/assessments/:assessmentId` |
+| POST | `/api/admin/assessments/:assessmentId/mark-arrived` |
+| GET | `/api/admin/assessments/feedback-form` |
+| POST | `/api/admin/assessments/:assessmentId/feedback` |
 | POST | `/api/admin/assessments/:assessmentId/decide` |
 | GET | `/api/admin/assessments/payments/pending` |
 | POST | `/api/admin/assessments/:assessmentId/payments/:kind/mark-paid` |
@@ -580,8 +615,9 @@ or their `work.primaryCategory` isn't `electrical`. The response `message` says
 which.
 
 **Feedback submission says the worker hasn't checked in.** Geofenced check-in is
-the proof of attendance, so it's required before feedback. If they genuinely never
-arrived, use `mark-no-show`.
+the proof of attendance, so it's required before feedback. Use **Mark worker
+arrived** in the admin panel to override it (needed for any future-dated slot), or
+`mark-no-show` if they genuinely never turned up.
 
 **Nothing happens in the background.** Use **⚙ Run background jobs now**, or
 `POST /api/admin/assessments/run-jobs {"task":"all"}`. Tasks: `noShows`,

@@ -11,6 +11,9 @@ const notify = require('../services/assessmentNotifyService');
 const partnerQuality = require('../services/partnerQualityService');
 const assessmentJobs = require('../services/assessmentJobsService');
 const tokenService = require('../services/assessmentTokenService');
+const { applyFeedback } = require('../services/assessmentFeedbackService');
+const { summarise } = require('../services/assessmentScoreService');
+const { PUBLIC_FIELDS } = require('../config/assessmentQuestions');
 const { transitionWorker } = require('../services/workerStatusService');
 const { sendPayout } = require('../services/payoutService');
 const { assessmentAdminView, partnerAdminView } = require('../utils/assessmentPayload');
@@ -20,6 +23,7 @@ const {
   PAYMENT_DEFERRED,
   SLOT_DURATION_MINUTES,
   REAPPLY_COOLDOWN_DAYS,
+  FEEDBACK_SLA_MINUTES,
 } = require('../config/assessmentConfig');
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -511,7 +515,141 @@ async function getAssessment(req, res, next) {
         tokenService.sign(assessment._id, assessment.scheduledEndAt)
       );
     }
-    return ok(res, { assessment: view, worker: assessment.worker }, 'Assessment detail');
+    return ok(
+      res,
+      {
+        assessment: view,
+        worker: assessment.worker,
+        // So the panel can render the shop-owner questions from the same source of
+        // truth as the partner web form, rather than hard-coding them.
+        feedbackFields: PUBLIC_FIELDS,
+      },
+      'Assessment detail'
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/admin/assessments/:assessmentId/mark-arrived   { note? }
+// Ops override for the geofenced in-app check-in.
+//
+// Needed because the worker's check-in is gated on being within 500 m of the shop
+// AND inside the slot's time window. When ops is running the session through the
+// panel — the worker's phone died, the owner phoned it in, or a slot is being
+// walked through ahead of its date — neither gate can be satisfied, and without
+// this the assessment can never reach the point where feedback is accepted.
+//
+// Recorded as `checkedInBy: 'admin'` so a real geofenced arrival is always
+// distinguishable from an override in the audit trail.
+async function markArrived(req, res, next) {
+  try {
+    const assessment = await WorkerAssessment.findById(req.params.assessmentId);
+    if (!assessment) return fail(res, 'Assessment not found', 404);
+
+    if (assessment.workerArrivedAt) {
+      return fail(res, 'This worker is already checked in', 409, { status: assessment.status });
+    }
+    if (!['booked', 'confirmed'].includes(assessment.status)) {
+      return fail(res, `Cannot check in an assessment with status "${assessment.status}"`, 409);
+    }
+
+    const [worker, partner] = await Promise.all([
+      Worker.findById(assessment.worker),
+      ShopPartner.findById(assessment.shopPartner),
+    ]);
+    if (!worker) return fail(res, 'Worker not found', 404);
+
+    const now = new Date();
+    const note = (req.body && req.body.note) || null;
+    const early = assessment.scheduledAt.getTime() > now.getTime();
+
+    assessment.status = 'worker_arrived';
+    assessment.workerArrivedAt = now;
+    assessment.checkedInBy = 'admin';
+    // Deliberately no checkInLocation/distance: no location was verified, and
+    // writing a fake one would make an override look like a real arrival.
+    assessment.feedback.slaDeadlineAt = new Date(now.getTime() + FEEDBACK_SLA_MINUTES * 60 * 1000);
+    await assessment.save();
+
+    await transitionWorker(worker, 'assessment_checked_in', {
+      actor: req.admin.email,
+      reason:
+        `Checked in by admin (override, no geofence)` +
+        (early ? ' — slot is in the future' : '') +
+        (note ? ` — ${String(note).trim()}` : ''),
+      assessment: assessment._id,
+    });
+    worker.electricalAssessment.stage = 'checked_in';
+    await worker.save();
+
+    notify.pushAssessmentUpdate(worker._id, assessment);
+
+    return ok(
+      res,
+      {
+        assessment: assessmentAdminView(assessment),
+        slotIsInTheFuture: early,
+        feedbackLink: tokenService.buildLink(
+          tokenService.sign(assessment._id, assessment.scheduledEndAt)
+        ),
+      },
+      early
+        ? 'Worker marked as arrived (note: this slot is scheduled in the future)'
+        : 'Worker marked as arrived'
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/admin/assessments/feedback-form
+// The field definitions for the shop-owner form, so the admin panel renders the
+// same questions from the same source as the partner web form.
+async function feedbackForm(req, res, next) {
+  try {
+    return ok(res, { fields: PUBLIC_FIELDS }, 'Assessment feedback form fields');
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/admin/assessments/:assessmentId/feedback
+// Enter the shop owner's feedback on their behalf — for an owner who phoned it in,
+// or who can't use the web form. Identical effects to the owner submitting it
+// themselves (score, counters, worker transition, upfront payout), and recorded as
+// submittedVia: 'admin' with the admin's id.
+async function submitFeedbackAsAdmin(req, res, next) {
+  try {
+    const assessment = await WorkerAssessment.findById(req.params.assessmentId);
+    if (!assessment) return fail(res, 'Assessment not found', 404);
+
+    const [worker, partner] = await Promise.all([
+      Worker.findById(assessment.worker),
+      ShopPartner.findById(assessment.shopPartner),
+    ]);
+    if (!worker) return fail(res, 'Worker not found', 404);
+    if (!partner) return fail(res, 'Shop partner not found', 404);
+
+    const outcome = await applyFeedback({
+      assessment,
+      partner,
+      worker,
+      body: req.body || {},
+      submittedVia: 'admin',
+      adminId: req.admin._id,
+    });
+    if (!outcome.ok) return fail(res, outcome.message, outcome.code, outcome.extra || {});
+
+    return ok(
+      res,
+      {
+        assessment: assessmentAdminView(assessment),
+        score: outcome.result,
+        summary: summarise(outcome.result),
+      },
+      `Feedback recorded — ${summarise(outcome.result)}. Ready for a decision.`
+    );
   } catch (err) {
     next(err);
   }
@@ -772,6 +910,9 @@ module.exports = {
   pendingReview,
   listAssessments,
   getAssessment,
+  markArrived,
+  feedbackForm,
+  submitFeedbackAsAdmin,
   decideAssessment,
   pendingPayments,
   markPaymentPaid,

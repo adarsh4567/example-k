@@ -3,12 +3,9 @@ const ShopPartner = require('../models/ShopPartner');
 const Worker = require('../models/Worker');
 const { ok, fail } = require('../utils/response');
 const tokenService = require('../services/assessmentTokenService');
-const { validateSubmission, PUBLIC_FIELDS } = require('../config/assessmentQuestions');
-const { score, summarise } = require('../services/assessmentScoreService');
-const { transitionWorker } = require('../services/workerStatusService');
+const { PUBLIC_FIELDS } = require('../config/assessmentQuestions');
+const { applyFeedback } = require('../services/assessmentFeedbackService');
 const booking = require('../services/assessmentBookingService');
-const notify = require('../services/assessmentNotifyService');
-const { sendPayout } = require('../services/payoutService');
 const { formatDateTime } = require('../utils/slotTime');
 const { NO_SHOW_GRACE_MINUTES } = require('../config/assessmentConfig');
 
@@ -117,83 +114,16 @@ async function submitFeedback(req, res, next) {
     if (!ctx) return;
     const { assessment, partner, worker } = ctx;
 
-    // The worker must have checked in — that geofenced check-in is what proves
-    // they actually attended. If they never arrived, the correct action is
-    // mark-no-show, which pays nothing.
-    if (!['worker_arrived', 'assessment_complete'].includes(assessment.status)) {
-      return fail(
-        res,
-        'The worker has not checked in for this assessment yet. If they did not arrive, use the "mark as no-show" option instead.',
-        409,
-        { status: assessment.status }
-      );
-    }
-
-    const validated = validateSubmission(body);
-    if (!validated.ok) return fail(res, validated.message, 422);
-
-    const result = score(validated.value);
-    const now = new Date();
-
-    Object.assign(assessment.feedback, validated.value, {
-      preliminaryScore: result.preliminaryScore,
-      safetyFailed: result.safetyFailed,
-      engineRecommendation: result.recommendation,
-      scoreBreakdown: result.breakdown,
+    // All the scoring, counters, transitions, notifications and the payout live in
+    // the service so the admin panel's equivalent flow behaves identically.
+    const outcome = await applyFeedback({
+      assessment,
+      partner,
+      worker,
+      body,
       submittedVia: body.submittedVia === 'whatsapp' ? 'whatsapp' : 'web_form',
-      submittedAt: now,
     });
-    // The session is complete by definition once the owner has reviewed it.
-    assessment.assessmentCompletedAt = assessment.assessmentCompletedAt || now;
-    assessment.feedbackSubmittedAt = now;
-    assessment.status = 'feedback_submitted';
-    await assessment.save();
-
-    // Partner counters.
-    partner.stats.totalAssessmentsConducted = (partner.stats.totalAssessmentsConducted || 0) + 1;
-    partner.stats.lastAssessmentAt = now;
-    await partner.save();
-
-    // Worker moves into the admin review queue. NOTE: the score never
-    // auto-decides — every assessment gets a human decision.
-    if (worker.status === 'assessment_checked_in' || worker.status === 'assessment_booked') {
-      await transitionWorker(worker, 'assessment_feedback_submitted', {
-        reason: `Shop feedback submitted by ${partner.shopName} — ${summarise(result)}`,
-        assessment: assessment._id,
-      });
-    }
-    worker.electricalAssessment.stage = 'awaiting_decision';
-    await worker.save();
-
-    // Push the app off the "waiting for the shop owner" screen straight away.
-    notify.pushAssessmentUpdate(worker._id, assessment);
-
-    await notify
-      .feedbackReceived({ worker, partner, assessment, scoreSummary: summarise(result) })
-      .catch((e) => console.error('[assessment] feedback notifications failed:', e.message));
-
-    // Release the upfront half of the payout. Non-fatal: a payout failure must
-    // not lose the feedback that was just submitted — ops can retry from the
-    // payments dashboard.
-    try {
-      const payout = await sendPayout(partner, {
-        amount: assessment.payment.upfrontAmount,
-        purpose: 'assessment upfront',
-        assessmentId: assessment._id,
-      });
-      assessment.payment.upfrontPaid = true;
-      assessment.payment.upfrontPaidAt = new Date();
-      assessment.payment.upfrontReference = payout.reference;
-      await assessment.save();
-      await notify
-        .upfrontPaid({ partner, amount: assessment.payment.upfrontAmount })
-        .catch(() => {});
-    } catch (e) {
-      console.error(`[assessment] upfront payout failed for ${assessment._id}:`, e.message);
-      await notify
-        .opsAlert(`Upfront payout FAILED for assessment ${assessment._id} (${partner.shopName}): ${e.message}`)
-        .catch(() => {});
-    }
+    if (!outcome.ok) return fail(res, outcome.message, outcome.code, outcome.extra || {});
 
     return ok(
       res,

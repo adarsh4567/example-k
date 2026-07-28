@@ -55,9 +55,14 @@ router.delete('/shop-partners/:partnerId/slots/:slotId', assessment.deleteSlot);
 // aren't captured as an id (same reason as '/trial/nearby-workers' above).
 router.get('/assessments/pending-review', assessment.pendingReview);
 router.get('/assessments/payments/pending', assessment.pendingPayments);
+router.get('/assessments/feedback-form', assessment.feedbackForm);
 router.post('/assessments/run-jobs', assessment.runJobs);
 router.get('/assessments', assessment.listAssessments);
 router.get('/assessments/:assessmentId', assessment.getAssessment);
+// Ops standing in for the shop owner: override the geofenced check-in, then enter
+// the owner's feedback. Both mirror the partner web form exactly.
+router.post('/assessments/:assessmentId/mark-arrived', assessment.markArrived);
+router.post('/assessments/:assessmentId/feedback', assessment.submitFeedbackAsAdmin);
 router.post('/assessments/:assessmentId/decide', assessment.decideAssessment);
 router.post('/assessments/:assessmentId/payments/:kind/mark-paid', assessment.markPaymentPaid);
 
