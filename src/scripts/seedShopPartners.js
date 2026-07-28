@@ -14,16 +14,19 @@ const {
  * app has something to book against on a fresh database.
  *
  * Usage:
- *   node src/scripts/seedShopPartners.js                    # seed defaults (Bengaluru)
+ *   node src/scripts/seedShopPartners.js                    # seed defaults (Hyderabad)
  *   node src/scripts/seedShopPartners.js --days 14          # 14 days of slots
- *   node src/scripts/seedShopPartners.js --lat 12.93 --lng 77.61
+ *   node src/scripts/seedShopPartners.js --lat 17.416395 --lng 78.433306
  *                                                           # cluster shops near a point
  *                                                           # (use your test device's location)
  *   node src/scripts/seedShopPartners.js --city Pune
- *   node src/scripts/seedShopPartners.js --reset            # delete existing seeds first
+ *   node src/scripts/seedShopPartners.js --reset            # delete this city's seeds first
  *
- * Idempotent: partners are matched on ownerPhone and slots on (partner, startsAt),
- * so re-running tops up the calendar rather than duplicating anything.
+ * Idempotent, and safe to re-run as you move: owner phones are derived from the
+ * city (so each city gets its own four shops), slots are matched on
+ * (partner, startsAt) so the calendar is topped up rather than duplicated, and
+ * re-running with different --lat/--lng RELOCATES that city's shops to the new
+ * anchor instead of leaving them at the old one.
  */
 
 function arg(name, fallback = null) {
@@ -35,26 +38,70 @@ const hasFlag = (name) => process.argv.includes(`--${name}`);
 // Times of day each shop opens for assessments (shop-local, 24h).
 const SLOT_TIMES = ['10:00', '11:30', '15:00', '16:30'];
 
-// Base shops, offset slightly from the anchor point so the distance sort is visible.
+// Base shops, offset from the anchor so the distance sort is visible (roughly
+// 0.15 km, 1.5 km, 3 km and 5 km out).
+//
+// The nearest one is kept deliberately INSIDE the 500 m check-in geofence: with a
+// larger offset you can book from the anchor point but then fail check-in, which
+// looks like a bug in the geofence rather than a property of the seed data.
 const SHOP_TEMPLATES = [
-  { shopName: 'Sri Balaji Electricals', ownerName: 'Ramesh Kumar', ownerPhone: '9800000001', locality: 'Koramangala', dLat: 0.004, dLng: 0.003 },
-  { shopName: 'New Light Electrical Works', ownerName: 'Imran Shaikh', ownerPhone: '9800000002', locality: 'Indiranagar', dLat: 0.012, dLng: -0.009 },
-  { shopName: 'Ganesh Electrical Store', ownerName: 'Suresh Patil', ownerPhone: '9800000003', locality: 'HSR Layout', dLat: -0.021, dLng: 0.017 },
-  { shopName: 'Modern Wiring & Repairs', ownerName: 'Anil Verma', ownerPhone: '9800000004', locality: 'BTM Layout', dLat: 0.035, dLng: 0.028 },
+  { shopName: 'Sri Balaji Electricals', ownerName: 'Ramesh Kumar', dLat: 0.001, dLng: 0.001 },
+  { shopName: 'New Light Electrical Works', ownerName: 'Imran Shaikh', dLat: 0.012, dLng: -0.009 },
+  { shopName: 'Ganesh Electrical Store', ownerName: 'Suresh Patil', dLat: -0.021, dLng: 0.017 },
+  { shopName: 'Modern Wiring & Repairs', ownerName: 'Anil Verma', dLat: 0.035, dLng: 0.028 },
 ];
+
+// Plausible localities per city so seeded addresses aren't nonsense. Any city not
+// listed falls back to "<City> Area N".
+const LOCALITIES = {
+  bengaluru: ['Koramangala', 'Indiranagar', 'HSR Layout', 'BTM Layout'],
+  bangalore: ['Koramangala', 'Indiranagar', 'HSR Layout', 'BTM Layout'],
+  hyderabad: ['Banjara Hills', 'Khairatabad', 'Ameerpet', 'Jubilee Hills'],
+  pune: ['Kothrud', 'Viman Nagar', 'Hadapsar', 'Baner'],
+  mumbai: ['Andheri', 'Dadar', 'Bandra', 'Chembur'],
+  delhi: ['Saket', 'Rohini', 'Dwarka', 'Lajpat Nagar'],
+};
+
+const localityFor = (city, i) => {
+  const list = LOCALITIES[String(city).trim().toLowerCase()];
+  return list ? list[i % list.length] : `${city} Area ${i + 1}`;
+};
+
+/**
+ * Owner phones are derived from the city so each city gets its own four shops.
+ * With a fixed phone list, seeding a second city would match the existing
+ * documents and silently top up slots at the FIRST city's coordinates — which
+ * then fails the 500 m check-in geofence for no visible reason.
+ *
+ * Format: 98 + 2-digit city code + 0000 + 2-digit index (a valid 10-digit
+ * Indian mobile). Deterministic, so re-running a city is still idempotent.
+ */
+function cityCode(city) {
+  const s = String(city).trim().toLowerCase();
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 100;
+  return String(h).padStart(2, '0');
+}
+const phoneFor = (city, i) => `98${cityCode(city)}0000${String(i + 1).padStart(2, '0')}`;
 
 (async () => {
   await connectDB();
 
-  const city = arg('city', 'Bengaluru');
+  const city = arg('city', 'Hyderabad');
   const days = Number(arg('days', 7));
-  // Default anchor: central Bengaluru. Override with your device's coordinates so
-  // the 500 m check-in geofence can actually be satisfied while testing.
-  const anchorLat = Number(arg('lat', 12.9716));
-  const anchorLng = Number(arg('lng', 77.5946));
+  // Default anchor: Banjara Hills / Khairatabad, Hyderabad — the operating area
+  // being tested against. Override with your device's coordinates so the 500 m
+  // check-in geofence can actually be satisfied while testing.
+  const anchorLat = Number(arg('lat', 17.416395));
+  const anchorLng = Number(arg('lng', 78.433306));
 
   if (hasFlag('reset')) {
-    const phones = SHOP_TEMPLATES.map((s) => s.ownerPhone);
+    // Both the city-derived phones and the original fixed ones, so a database
+    // seeded by an older version of this script is cleaned up too.
+    const phones = [
+      ...SHOP_TEMPLATES.map((_, i) => phoneFor(city, i)),
+      '9800000001', '9800000002', '9800000003', '9800000004',
+    ];
     const doomed = await ShopPartner.find({ ownerPhone: { $in: phones } }).select('_id');
     await AssessmentSlot.deleteMany({ shopPartner: { $in: doomed.map((d) => d._id) } });
     await ShopPartner.deleteMany({ _id: { $in: doomed.map((d) => d._id) } });
@@ -62,21 +109,24 @@ const SHOP_TEMPLATES = [
   }
 
   let partnersCreated = 0;
+  let partnersMoved = 0;
   let slotsCreated = 0;
 
-  for (const tpl of SHOP_TEMPLATES) {
+  for (const [i, tpl] of SHOP_TEMPLATES.entries()) {
     const lat = anchorLat + tpl.dLat;
     const lng = anchorLng + tpl.dLng;
+    const ownerPhone = phoneFor(city, i);
+    const locality = localityFor(city, i);
 
-    let partner = await ShopPartner.findOne({ ownerPhone: tpl.ownerPhone });
+    let partner = await ShopPartner.findOne({ ownerPhone });
     if (!partner) {
       partner = await ShopPartner.create({
         shopName: tpl.shopName,
         ownerName: tpl.ownerName,
-        ownerPhone: tpl.ownerPhone,
+        ownerPhone,
         city,
-        locality: tpl.locality,
-        fullAddress: `${tpl.shopName}, ${tpl.locality}, ${city}`,
+        locality,
+        fullAddress: `${tpl.shopName}, ${locality}, ${city}`,
         location: { type: 'Point', coordinates: [lng, lat] },
         googleMapsLink: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
         status: 'active',
@@ -86,13 +136,35 @@ const SHOP_TEMPLATES = [
           upfront: PAYMENT_UPFRONT,
           deferred: PAYMENT_DEFERRED,
           method: 'upi',
-          upiId: `${tpl.ownerPhone}@upi`,
+          upiId: `${ownerPhone}@upi`,
         },
       });
       partnersCreated += 1;
-      console.log(`🏪 created ${partner.shopName} (${tpl.locality}) at ${lat.toFixed(4)},${lng.toFixed(4)}`);
+      console.log(`🏪 created ${partner.shopName} (${locality}) at ${lat.toFixed(4)},${lng.toFixed(4)}`);
     } else {
-      console.log(`↺  ${partner.shopName} already exists — topping up slots`);
+      // Re-running with a different --lat/--lng MOVES the shop to the new anchor.
+      // Otherwise you'd re-seed at your real location and still fail the 500 m
+      // check-in geofence, because the shop stayed where it was first created.
+      const [oldLng, oldLat] = partner.location.coordinates;
+      const moved = Math.abs(oldLat - lat) > 1e-6 || Math.abs(oldLng - lng) > 1e-6;
+      if (moved) {
+        partner.location = { type: 'Point', coordinates: [lng, lat] };
+        partner.googleMapsLink = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+        partner.locality = locality;
+        partner.fullAddress = `${tpl.shopName}, ${locality}, ${city}`;
+        partnersMoved += 1;
+      }
+      // A partner paused/terminated by an earlier test run would be invisible to
+      // the slot search; re-seeding is also how you reactivate it.
+      if (partner.status !== 'active') {
+        partner.status = 'active';
+        partner.autoActionedAt = null;
+        partner.autoActionReason = null;
+      }
+      await partner.save();
+      console.log(
+        `↺  ${partner.shopName} already exists — ${moved ? `moved to ${lat.toFixed(4)},${lng.toFixed(4)}, ` : ''}topping up slots`
+      );
     }
 
     // Build the next `days` days of slots, skipping any already in the past.
@@ -133,7 +205,8 @@ const SHOP_TEMPLATES = [
   }
 
   console.log(
-    `\n✅ Done — ${partnersCreated} partner(s) created, ${slotsCreated} slot(s) added in ${city}.` +
+    `\n✅ Done — ${partnersCreated} partner(s) created, ${partnersMoved} relocated, ` +
+      `${slotsCreated} slot(s) added in ${city}.` +
       `\n   Anchor point: ${anchorLat},${anchorLng}` +
       `\n   Tip: pass --lat/--lng with your test device's coordinates so check-in passes the 500 m geofence.\n`
   );

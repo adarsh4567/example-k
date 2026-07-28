@@ -136,33 +136,55 @@ async function availableSlots(req, res, next) {
         ? null
         : cityParam || (req.worker.location && req.worker.location.city) || null;
 
-    const partnerQuery = { status: 'active' };
-    if (city) partnerQuery.city = new RegExp(`^${String(city).trim()}$`, 'i');
-
-    // Find candidate shops, nearest first when we know where the worker is.
-    let partners;
-    if (origin) {
-      partners = await ShopPartner.aggregate([
+    // Find active shops, nearest first when we know where the worker is.
+    const findPartners = async (withCity) => {
+      const query = { status: 'active' };
+      if (withCity) query.city = new RegExp(`^${String(withCity).trim()}$`, 'i');
+      if (!origin) return ShopPartner.find(query).limit(100).lean();
+      return ShopPartner.aggregate([
         {
           $geoNear: {
             near: { type: 'Point', coordinates: [origin.lng, origin.lat] },
             distanceField: 'distanceMeters',
             maxDistance: SLOT_SEARCH_MAX_RADIUS_KM * 1000,
             spherical: true,
-            query: partnerQuery,
+            query,
           },
         },
         { $limit: 100 },
       ]);
-    } else {
-      partners = await ShopPartner.find(partnerQuery).limit(100).lean();
+    };
+
+    // The city name is a SOFT preference, not a hard gate: distance is the real
+    // constraint, and city strings are the brittle part ("Bangalore" vs
+    // "Bengaluru", or a worker in Secunderabad next to a Hyderabad shop 8 km
+    // away). So prefer shops in the worker's own city, and if that finds nothing,
+    // fall back to whatever is genuinely nearby.
+    //
+    // The fallback only runs when we have the worker's coordinates — without them
+    // there is no radius bound, and dropping the city filter would offer a worker
+    // in Delhi a shop in Hyderabad.
+    let partners = await findPartners(city);
+    let matchedBy = city ? 'city_and_distance' : 'distance';
+    if (city && !partners.length && origin) {
+      partners = await findPartners(null);
+      if (partners.length) matchedBy = 'distance_only';
     }
 
     if (!partners.length) {
       return ok(
         res,
-        { slots: [], slotsByDate: [], totalSlots: 0, searchRadiusKm: SLOT_SEARCH_MAX_RADIUS_KM, city },
-        'No partner shops found near you yet'
+        {
+          slots: [],
+          slotsByDate: [],
+          totalSlots: 0,
+          searchRadiusKm: SLOT_SEARCH_MAX_RADIUS_KM,
+          city,
+          matchedBy: 'none',
+        },
+        origin
+          ? `No partner shops found within ${SLOT_SEARCH_MAX_RADIUS_KM} km of you yet`
+          : 'No partner shops found near you yet'
       );
     }
 
@@ -244,6 +266,9 @@ async function availableSlots(req, res, next) {
         totalSlots: slots.length,
         searchRadiusKm: SLOT_SEARCH_MAX_RADIUS_KM,
         city,
+        // 'city_and_distance' | 'distance_only' (city had no shops, nearest used)
+        // | 'distance' (no city on file) — informational, for ops/debugging.
+        matchedBy,
         locationUsed: origin,
       },
       slots.length ? 'Available assessment slots' : 'No slots available in this window'

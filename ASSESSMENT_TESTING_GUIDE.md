@@ -20,14 +20,26 @@ There are **four actors**. This guide is organised around who does what:
 ```bash
 npm install                       # nothing new was added — no new dependencies
 npm run seed:admin                # admin@kaaryo.com / Admin@123
-npm run seed:shops -- --lat <your-lat> --lng <your-lng> --city Bengaluru --days 7
+npm run seed:shops -- --lat 17.416395 --lng 78.433306 --city Hyderabad --days 7
 npm run dev
 ```
 
 **Pass your test device's real coordinates to `seed:shops`.** Check-in is geofenced
 to 500 m of the shop, so seeding shops around wherever the phone actually is makes
-the happy path work without faking GPS. The script is idempotent — re-run it any
-time to top the calendar back up. `--reset` deletes the seeded shops and their slots.
+the happy path work without faking GPS. The defaults above are the Hyderabad
+operating area (Banjara Hills / Khairatabad).
+
+It seeds four shops at roughly 0.15 km, 1.5 km, 3 km and 5 km from the anchor, so
+distance sorting is visible **and** the nearest one is inside the 500 m check-in
+radius — you can run the whole happy path from the anchor point without any env
+overrides.
+
+Safe to re-run as you move: owner phones are derived from the city (so each city
+gets its own four shops), slots are matched on (partner, start time) so the calendar
+is topped up rather than duplicated, and re-running with different `--lat/--lng`
+**relocates** that city's shops to the new anchor rather than leaving them where
+they were first created. It also reactivates any partner an earlier test paused or
+terminated. `--reset` deletes that city's shops and their slots outright.
 
 Server starts on **http://localhost:4000**. On boot you should see:
 
@@ -527,10 +539,31 @@ skipped rather than created.
 
 ## 10. Troubleshooting
 
-**Empty slot list.** Slots are filtered by the worker's city *and* a 25 km radius
-of their coordinates. Check the partner's city matches `worker.location.city`
-exactly, or pass `city=any`. Re-run `npm run seed:shops` if the calendar ran out —
-past slots are never offered.
+**Empty slot list.** The binding constraint is the **25 km radius** around the
+worker's coordinates — the city name is only a soft preference (see below). So an
+empty list almost always means no partner shop is within 25 km, or the calendar ran
+out (past slots are never offered). Re-run `npm run seed:shops` with your
+coordinates.
+
+### How a shop gets allocated
+
+Distance does the real work; the city name is a preference, not a gate:
+
+1. Shops in the worker's own city within 25 km, nearest first
+   (`matchedBy: "city_and_distance"`).
+2. If that finds nothing, **any** active shop within 25 km, nearest first
+   (`matchedBy: "distance_only"`).
+3. Nothing within 25 km → empty list (`matchedBy: "none"`).
+
+Step 2 exists because city strings are the brittle part — "Bangalore" vs
+"Bengaluru", or a worker in Secunderabad standing 8 km from a shop registered in
+Hyderabad. It only ever *adds* results where there would have been zero, and it
+only runs when the worker's coordinates are known, so the radius still bounds it: a
+worker in Delhi is never offered a Hyderabad shop. Pass `city=any` to skip step 1
+entirely.
+
+Without coordinates (location permission declined) there is no radius to fall back
+on, so the city filter stays strict and distances come back `null`.
 
 **Check-in always 422.** The shop is more than 500 m from your test coordinates.
 Re-seed with `--lat/--lng` at your actual location, or set
