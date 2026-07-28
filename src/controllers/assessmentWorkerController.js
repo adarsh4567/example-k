@@ -21,6 +21,7 @@ const {
   CHECKIN_RADIUS_METERS,
   CHECKIN_OPENS_MINUTES_BEFORE,
   CANCEL_CUTOFF_HOURS,
+  LATE_CANCEL_WINDOW_HOURS,
   CANCELLATIONS_BEFORE_FLAG,
   FEEDBACK_SLA_MINUTES,
 } = require('../config/assessmentConfig');
@@ -351,19 +352,37 @@ async function cancelBooking(req, res, next) {
       return fail(res, `This assessment can no longer be cancelled (status: ${assessment.status})`, 409);
     }
 
+    // A worker may cancel right up until the slot starts (CANCEL_CUTOFF_HOURS
+    // defaults to 0). The only hard boundary is the slot itself: once it has begun
+    // there is nothing left to cancel — they either attended or it's a no-show.
     const hoursAway = (assessment.scheduledAt.getTime() - Date.now()) / (60 * 60 * 1000);
+    if (hoursAway <= 0) {
+      return fail(
+        res,
+        'This assessment has already started, so it can no longer be cancelled. Please contact support if you could not attend.',
+        409,
+        { reason: 'slot_already_started' }
+      );
+    }
     if (hoursAway < CANCEL_CUTOFF_HOURS) {
       return fail(
         res,
         `Bookings can only be cancelled at least ${CANCEL_CUTOFF_HOURS} hours in advance. Please attend, or contact support.`,
-        409
+        409,
+        { reason: 'inside_cancel_cutoff' }
       );
     }
+
+    // Allowed, but a late cancellation still costs the shop owner their slot, so
+    // it is recorded and surfaced rather than silently treated as routine.
+    const isLate = hoursAway < LATE_CANCEL_WINDOW_HOURS;
 
     assessment.status = 'cancelled';
     assessment.cancelledAt = new Date();
     assessment.cancelledBy = 'worker';
     assessment.cancellationReason = String(cancellationReason).trim();
+    assessment.cancelledLate = isLate;
+    assessment.cancelledHoursBefore = Math.round(hoursAway * 100) / 100;
     await assessment.save();
 
     // Free the seat for other workers.
@@ -371,15 +390,20 @@ async function cancelBooking(req, res, next) {
       console.error(`[assessment] failed to release slot ${assessment.slot}:`, e.message)
     );
 
-    // Repeated cancellations are an ops signal, not an automatic block.
+    // Repeated cancellations are an ops signal, not an automatic block. Late ones
+    // are counted separately: a cancellation three days out costs nobody anything,
+    // one twenty minutes out costs the shop owner their slot.
     const block = req.worker.electricalAssessment;
     block.cancellationCount = (block.cancellationCount || 0) + 1;
+    if (isLate) block.lateCancellationCount = (block.lateCancellationCount || 0) + 1;
     block.stage = 'awaiting_booking';
     if (block.cancellationCount >= CANCELLATIONS_BEFORE_FLAG) block.flaggedForReview = true;
     await req.worker.save();
 
     await transitionWorker(req.worker, 'pending_assessment', {
-      reason: `Worker cancelled assessment — ${assessment.cancellationReason}`,
+      reason:
+        `Worker cancelled assessment${isLate ? ` LATE (${assessment.cancelledHoursBefore}h before)` : ''}` +
+        ` — ${assessment.cancellationReason}`,
       assessment: assessment._id,
     });
 
@@ -395,6 +419,15 @@ async function cancelBooking(req, res, next) {
         })
         .catch((e) => console.error('[assessment] cancel notifications failed:', e.message));
     }
+    if (isLate) {
+      await notify
+        .opsAlert(
+          `Late cancellation (${assessment.cancelledHoursBefore}h before the slot) — worker ` +
+            `${req.worker.fullName || req.worker.phone} at ${partner ? partner.shopName : 'unknown shop'}. ` +
+            `Late cancellations by this worker: ${block.lateCancellationCount}.`
+        )
+        .catch(() => {});
+    }
     if (block.flaggedForReview) {
       await notify
         .opsAlert(
@@ -405,8 +438,14 @@ async function cancelBooking(req, res, next) {
 
     return ok(
       res,
-      { assessment: assessmentWorkerView(assessment, partner, req.worker), flaggedForReview: !!block.flaggedForReview },
-      'Your booking has been cancelled'
+      {
+        assessment: assessmentWorkerView(assessment, partner, req.worker),
+        flaggedForReview: !!block.flaggedForReview,
+        wasLate: isLate,
+      },
+      isLate
+        ? 'Your booking has been cancelled. Please try to give more notice next time — the shop had kept that slot for you.'
+        : 'Your booking has been cancelled'
     );
   } catch (err) {
     next(err);

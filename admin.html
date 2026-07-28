@@ -2809,7 +2809,7 @@
             <dt>Worker status</dt><dd>${(worker && worker.status) || '—'}</dd>
             <dt>Attempt</dt><dd>${String(a.attempt || 1)}</dd>
             <dt>No-shows</dt><dd>${String(block.noShowCount || 0)}</dd>
-            <dt>Cancellations</dt><dd>${String(block.cancellationCount || 0)}</dd>
+            <dt>Cancellations</dt><dd>${String(block.cancellationCount || 0)}${block.lateCancellationCount ? ' (' + block.lateCancellationCount + ' late)' : ''}</dd>
           </dl>`;
         shell.body.appendChild(wsec);
 
@@ -2825,6 +2825,7 @@
             <dt>Scheduled</dt><dd>${a.displayDateTime || fmtDate(a.scheduledAt)}</dd>
             <dt>Checked in</dt><dd>${a.workerArrivedAt ? fmtDate(a.workerArrivedAt) + ' (' + (a.checkInDistanceMeters === null || a.checkInDistanceMeters === undefined ? '?' : a.checkInDistanceMeters) + ' m from shop)' : 'not checked in'}</dd>
             <dt>Feedback at</dt><dd>${a.feedbackSubmittedAt ? fmtDate(a.feedbackSubmittedAt) : '—'}</dd>
+            ${a.cancelledAt ? safe`<dt>Cancelled</dt><dd>${fmtDate(a.cancelledAt)} by ${a.cancelledBy || '—'}${a.cancelledLate ? ' — LATE, ' + a.cancelledHoursBefore + 'h before the slot' : ''}${a.cancellationReason ? ' · ' + a.cancellationReason : ''}</dd>` : ''}
           </dl>`;
         if (a.feedbackLink) {
           var linkNote = document.createElement('p');

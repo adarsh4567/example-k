@@ -30,8 +30,24 @@ module.exports = {
   CHECKIN_CLOSES_MINUTES_AFTER: Number(process.env.ASSESSMENT_CHECKIN_CLOSES_MIN) || 60,
 
   // ── Cancellation / no-show policy ──────────────────────────────────────────
-  // A worker may only self-cancel if the slot is at least this far away, in hours.
-  CANCEL_CUTOFF_HOURS: Number(process.env.ASSESSMENT_CANCEL_CUTOFF_HOURS) || 24,
+  // How far in advance a worker must cancel, in hours. Default 0: they may cancel
+  // any time right up until the slot starts, even with a minute left.
+  //
+  // A worker who genuinely can't make it is far better off cancelling late than
+  // silently not turning up — a cancellation frees the slot and warns the shop
+  // owner, while a no-show wastes the owner's hour, costs the worker a strike and
+  // risks a 15-day booking suspension. Blocking a late cancellation converts the
+  // honest outcome into the worst one, so the deterrent is visibility (below)
+  // rather than a locked button.
+  //
+  // `|| 0` would swallow an explicit 0, so read it explicitly.
+  CANCEL_CUTOFF_HOURS:
+    process.env.ASSESSMENT_CANCEL_CUTOFF_HOURS !== undefined
+      ? Number(process.env.ASSESSMENT_CANCEL_CUTOFF_HOURS)
+      : 0,
+  // A cancellation this close to the slot is flagged as "late" — it is allowed,
+  // but recorded and surfaced to ops, since the shop owner had blocked out the time.
+  LATE_CANCEL_WINDOW_HOURS: Number(process.env.ASSESSMENT_LATE_CANCEL_WINDOW_HOURS) || 2,
   // Nth cancellation that flags the worker's profile for admin review.
   CANCELLATIONS_BEFORE_FLAG: Number(process.env.ASSESSMENT_CANCEL_FLAG_AT) || 2,
   // A shop owner may mark no-show this many minutes after the slot start.

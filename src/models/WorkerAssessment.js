@@ -148,6 +148,11 @@ const workerAssessmentSchema = new mongoose.Schema(
     cancellationReason: { type: String, default: null },
     cancelledAt: { type: Date, default: null },
     cancelledBy: { type: String, enum: ['worker', 'admin', 'partner', null], default: null },
+    // A worker may cancel right up to the slot start, but a cancellation inside
+    // LATE_CANCEL_WINDOW_HOURS still costs the shop owner the slot they held, so
+    // it is recorded for ops rather than treated as routine.
+    cancelledLate: { type: Boolean, default: false },
+    cancelledHoursBefore: { type: Number, default: null },
 
     noShowMarkedAt: { type: Date, default: null },
     noShowMarkedBy: { type: String, enum: ['partner', 'system', 'admin', null], default: null },

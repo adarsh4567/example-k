@@ -222,6 +222,10 @@ const workerSchema = new mongoose.Schema(
       // Cumulative across all attempts — drives the 2-strike booking suspension.
       noShowCount: { type: Number, default: 0 },
       cancellationCount: { type: Number, default: 0 },
+      // Subset of cancellationCount made close to the slot. Cancelling is always
+      // allowed (it beats a no-show), so this is the visibility that replaces a
+      // hard cut-off.
+      lateCancellationCount: { type: Number, default: 0 },
       // Set when repeated no-shows pause booking (NO_SHOW_SUSPENSION_DAYS out).
       bookingSuspendedUntil: { type: Date, default: null },
       // Set on rejection (REAPPLY_COOLDOWN_DAYS out).

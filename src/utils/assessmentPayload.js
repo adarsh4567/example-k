@@ -165,9 +165,15 @@ function certificateFor(worker) {
  */
 function assessmentWorkerView(assessment, partner, worker = null) {
   if (!assessment) return null;
+  // The worker app treats `canCancel` as authoritative (it overrides the client's
+  // own rule), so this is where the policy lives. With CANCEL_CUTOFF_HOURS at its
+  // default of 0 the button stays live until the slot actually starts — cancelling
+  // late is always better than a no-show.
+  const msUntilSlot = new Date(assessment.scheduledAt).getTime() - Date.now();
   const canCancel =
     ['booked', 'confirmed'].includes(assessment.status) &&
-    new Date(assessment.scheduledAt).getTime() - Date.now() > CANCEL_CUTOFF_HOURS * 60 * 60 * 1000;
+    msUntilSlot > 0 &&
+    msUntilSlot > CANCEL_CUTOFF_HOURS * 60 * 60 * 1000;
   const block = (worker && worker.electricalAssessment) || {};
   const feedback = assessment.feedback || {};
 
@@ -263,6 +269,8 @@ function assessmentAdminView(assessment) {
     cancellationReason: assessment.cancellationReason,
     cancelledAt: assessment.cancelledAt,
     cancelledBy: assessment.cancelledBy,
+    cancelledLate: assessment.cancelledLate,
+    cancelledHoursBefore: assessment.cancelledHoursBefore,
     noShowMarkedAt: assessment.noShowMarkedAt,
     noShowMarkedBy: assessment.noShowMarkedBy,
     createdAt: assessment.createdAt,

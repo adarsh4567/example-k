@@ -60,7 +60,6 @@ practical — remove them before going live:
 ASSESSMENT_CHECKIN_RADIUS_M=50000        # check in from anywhere (default 500)
 ASSESSMENT_CHECKIN_OPENS_MIN=10080       # check-in opens a week early (default 30)
 ASSESSMENT_CHECKIN_CLOSES_MIN=10080      # …and stays open (default 60)
-ASSESSMENT_CANCEL_CUTOFF_HOURS=0         # cancel any time (default 24)
 ASSESSMENT_NO_SHOW_GRACE_MIN=0           # mark no-show immediately (default 15)
 ASSESSMENT_DEFERRED_JOBS=1               # deferred payout after 1 job (default 10)
 ASSESSMENT_SWEEP_INTERVAL_SECONDS=15     # faster background sweeps (default 60)
@@ -464,43 +463,70 @@ Rejecting sets a 30-day reapply cooldown.
 |---|---|---|---|
 | 1 | Slot race | Two workers `POST /book-slot` with the same `slotId` simultaneously | one `201`, one `409`; slot capacity lands at 0, never negative |
 | 2 | Double booking | Book, then try to book again | `409` "already have an assessment in progress" |
-| 3 | Check in too early | `POST /check-in` well before the slot | `409` "Check-in has not opened yet" |
-| 4 | Check in too far | Send coords ~5 km away | `422` + `distanceMeters` |
+| 3 | Check in too early | `POST /check-in` well before the slot | `400`, `reason: "checkin_not_open_yet"` |
+| 4 | Check in too far | Send coords ~5 km away | `400`, `reason: "outside_geofence"`, + `distanceMeters` |
 | 5 | Double check-in | Check in twice | `409` |
-| 6 | Cancel in time | Cancel a slot >24 h out | `200`; the slot returns to the picker |
-| 7 | Cancel too late | Cancel a slot <24 h out | `409` |
-| 8 | 2nd cancellation | Cancel twice | profile `flaggedForReview`, ops alert |
-| 9 | Safety failure | Submit with `isolatedCircuitBeforeTouching: false` and 5/5 everywhere else | `safetyFailed: true`, engine says `reject` even though the score is 100 — and it still waits for an admin decision |
-| 10 | Short task description | `tasksPerformed: "too short"` | `422` |
-| 11 | Token replay | Submit the same token twice | `409` |
-| 12 | Bad token | `GET /form/garbage` | `401` |
-| 13 | No-show, partner-marked | `mark-no-show` after the grace period | worker → `pending_assessment`, slot freed, **no payout** |
-| 14 | No-show, auto-detected | Book, let the check-in window pass, then Run background jobs | status `no_show`, `noShowMarkedBy: "system"` |
-| 15 | 2 no-shows | Repeat #14 | `bookingSuspendedUntil` set 15 days out; slot search returns `403` |
-| 16 | Reject | Reject an assessment | worker `rejected`, `reapplyAllowedAt` +30 days |
-| 17 | Reject without notes | Omit `adminNotes` | `422` |
-| 18 | Decide twice | Decide an already-decided assessment | `409` |
-| 19 | Deferred payout gate | Run deferred payouts with `jobsCompleted < 10` | not paid; paid once the threshold is met, with the trigger event recorded |
-| 20 | Partner terminated | Set a partner to `terminated` while a worker holds a slot there | future slots withdrawn, booking cancelled, worker told to rebook and returned to `pending_assessment` |
-| 21 | Slot withdrawn | Withdraw a single booked slot | same rescue behaviour for that one worker |
-| 22 | Quality auto-pause | See §8 | partner auto-paused below 60, auto-terminated below 40 |
-| 23 | Wrong trade | A cleaning worker calls `/available-slots` | `403` |
-| 24 | Cross-worker access | Worker A passes worker B's `assessmentId` | `403` |
-| 25 | Spoofed workerId | `GET /status/<other worker id>` | `403` |
-| 26 | Two-step approval | Approve, then `POST /acknowledge-decision` | `assessment_approved` → `approved`; a second call is a no-op `200` |
-| 27 | Rejection copy | Reject, then `GET /status` | `decisionMessage` set, `improvementAreas` ≤2 items, no scores or rubric anywhere in the payload |
-| 28 | Socket delivery | Connect a socket, then book | `assessment:updated`, `assessment:status_changed` and `worker:status_changed` all arrive in the same room as `jobs:open` |
-| 29 | Electrician onboarding | Run one through all nine screens with no videos | `submit` succeeds; `requiresVideoTask: false`, `finalGate: "shop_assessment"` |
-| 30 | Video flow closed | Call any `/onboarding/video/*` endpoint as an electrician | `403`, `reason: "video_task_not_applicable"` |
-| 31 | Cleaning unaffected | Same run as a cleaner | video task still opens; approve → `pending_trial` |
-| 32 | Future-dated booking, driven from the panel | Book a slot >24 h out, then Mark arrived → feedback → Approve | works end to end; `checkedInBy: "admin"`, `submittedVia: "admin"`, ₹300 released, certificate issued |
-| 33 | Override is auditable | Inspect after Mark arrived | `checkedInBy: "admin"`, and no fake check-in location is written |
-| 34 | Admin path validates identically | Submit an incomplete admin form | same `422`s as the owner form (missing fields, 20-char minimum) |
-| 35 | Owner path unchanged | Submit via the token link | `submittedVia: "web_form"`, no admin attributed |
+| 6 | Cancel well ahead | Cancel a slot >2 h out | `200`, `wasLate: false`; the slot returns to the picker |
+| 7 | Cancel with 1 minute left | Move `scheduledAt` to +1 min, then cancel | `200`, `wasLate: true`; slot released, ops alerted, `lateCancellationCount` +1 |
+| 8 | Cancel after the slot started | Cancel a slot in the past | `409`, `reason: "slot_already_started"` |
+| 9 | Cancel after check-in | Check in, then cancel | `409` |
+| 10 | 2nd cancellation | Cancel twice | profile `flaggedForReview`, ops alert |
+| 11 | Safety failure | Submit with `isolatedCircuitBeforeTouching: false` and 5/5 everywhere else | `safetyFailed: true`, engine says `reject` even though the score is 100 — and it still waits for an admin decision |
+| 12 | Short task description | `tasksPerformed: "too short"` | `422` |
+| 13 | Token replay | Submit the same token twice | `409` |
+| 14 | Bad token | `GET /form/garbage` | `401` |
+| 15 | No-show, partner-marked | `mark-no-show` after the grace period | worker → `pending_assessment`, slot freed, **no payout** |
+| 16 | No-show, auto-detected | Book, let the check-in window pass, then Run background jobs | status `no_show`, `noShowMarkedBy: "system"` |
+| 17 | 2 no-shows | Repeat #16 | `bookingSuspendedUntil` set 15 days out; slot search returns `403` |
+| 18 | Reject | Reject an assessment | worker `rejected`, `reapplyAllowedAt` +30 days |
+| 19 | Reject without notes | Omit `adminNotes` | `422` |
+| 20 | Decide twice | Decide an already-decided assessment | `409` |
+| 21 | Deferred payout gate | Run deferred payouts with `jobsCompleted < 10` | not paid; paid once the threshold is met, with the trigger event recorded |
+| 22 | Partner terminated | Set a partner to `terminated` while a worker holds a slot there | future slots withdrawn, booking cancelled, worker told to rebook and returned to `pending_assessment` |
+| 23 | Slot withdrawn | Withdraw a single booked slot | same rescue behaviour for that one worker |
+| 24 | Quality auto-pause | See §8 | partner auto-paused below 60, auto-terminated below 40 |
+| 25 | Wrong trade | A cleaning worker calls `/available-slots` | `403` |
+| 26 | Cross-worker access | Worker A passes worker B's `assessmentId` | `403` |
+| 27 | Spoofed workerId | `GET /status/<other worker id>` | `403` |
+| 28 | Two-step approval | Approve, then `POST /acknowledge-decision` | `assessment_approved` → `approved`; a second call is a no-op `200` |
+| 29 | Rejection copy | Reject, then `GET /status` | `decisionMessage` set, `improvementAreas` ≤2 items, no scores or rubric anywhere in the payload |
+| 30 | Socket delivery | Connect a socket, then book | `assessment:updated`, `assessment:status_changed` and `worker:status_changed` all arrive in the same room as `jobs:open` |
+| 31 | Electrician onboarding | Run one through all nine screens with no videos | `submit` succeeds; `requiresVideoTask: false`, `finalGate: "shop_assessment"` |
+| 32 | Video flow closed | Call any `/onboarding/video/*` endpoint as an electrician | `403`, `reason: "video_task_not_applicable"` |
+| 33 | Cleaning unaffected | Same run as a cleaner | video task still opens; approve → `pending_trial` |
+| 34 | Future-dated booking, driven from the panel | Book a slot >24 h out, then Mark arrived → feedback → Approve | works end to end; `checkedInBy: "admin"`, `submittedVia: "admin"`, ₹300 released, certificate issued |
+| 35 | Override is auditable | Inspect after Mark arrived | `checkedInBy: "admin"`, and no fake check-in location is written |
+| 36 | Admin path validates identically | Submit an incomplete admin form | same `422`s as the owner form (missing fields, 20-char minimum) |
+| 37 | Owner path unchanged | Submit via the token link | `submittedVia: "web_form"`, no admin attributed |
 
-All 35 of these were verified against a live server during implementation
+All 37 of these were verified against a live server during implementation
 (135 assertions on the assessment flow, 32 on the admin-driven flow, 26 on the
-onboarding sequence, 15 on shop allocation — 0 failures).
+onboarding sequence, 20 on the cancellation policy, 15 on shop allocation — 0
+failures).
+
+### Cancellation policy
+
+**A worker can cancel right up until the slot starts, even with a minute left.**
+There is deliberately no advance-notice cut-off:
+
+- A worker who genuinely can't make it is far better off cancelling than silently
+  not turning up. Cancelling frees the slot and warns the shop owner; a no-show
+  wastes the owner's hour, costs the worker a strike, and risks a 15-day booking
+  suspension. Blocking a late cancellation just converts the honest outcome into
+  the worst one.
+- The deterrent is visibility, not a locked button. A cancellation inside
+  `LATE_CANCEL_WINDOW_HOURS` (default 2 h) is recorded as `cancelledLate` with
+  `cancelledHoursBefore`, bumps the worker's `lateCancellationCount`, raises an ops
+  alert naming the shop, and shows in the admin panel on both the worker's counters
+  and the assessment record. The worker gets a gentler message asking for more
+  notice next time.
+- Two hard boundaries remain: once the slot has **started** there is nothing to
+  cancel (`409`, `reason: "slot_already_started"`), and once the worker has
+  **checked in** the session is under way (`409`).
+
+`canCancel` on the assessment payload is authoritative — the app honours it over
+its own local rule — and stays `true` until the slot start. Set
+`ASSESSMENT_CANCEL_CUTOFF_HOURS` if you ever want an advance-notice rule back.
 
 ---
 
