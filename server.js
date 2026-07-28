@@ -20,9 +20,12 @@ const adminRoutes = require('./src/routes/adminRoutes');
 const videoTaskRoutes = require('./src/routes/videoTaskRoutes');
 const trialWorkerRoutes = require('./src/routes/trialWorkerRoutes');
 const trialFeedbackRoutes = require('./src/routes/trialFeedbackRoutes');
+const assessmentWorkerRoutes = require('./src/routes/assessmentWorkerRoutes');
+const assessmentPartnerRoutes = require('./src/routes/assessmentPartnerRoutes');
 const dispatchService = require('./src/services/dispatchService');
 const videoJobsService = require('./src/services/videoJobsService');
 const trialJobsService = require('./src/services/trialJobsService');
+const assessmentJobsService = require('./src/services/assessmentJobsService');
 const socket = require('./src/realtime/socket');
 
 const app = express();
@@ -62,6 +65,9 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/worker/onboarding/video', videoTaskRoutes);
 app.use('/api/worker/trial', trialWorkerRoutes);
 app.use('/api/public/trial-feedback', trialFeedbackRoutes);
+app.use('/api/worker/assessment', assessmentWorkerRoutes);
+// Public (token-authenticated) shop-owner feedback form — the owner has no account.
+app.use('/api/partner/assessment', assessmentPartnerRoutes);
 
 // 404 + error handling
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
@@ -83,6 +89,9 @@ connectDB()
     videoJobsService.startSweeper();
     // Start the trial-job sweeper (offer expiry + customer-feedback SLA).
     trialJobsService.startSweeper();
+    // Start the shop-assessment sweeper (no-show detection + shop-feedback SLA,
+    // plus deferred payouts and monthly partner-quality scoring).
+    assessmentJobsService.startSweeper();
   })
   .catch((err) => {
     console.error('❌ Failed to start server:', err.message);

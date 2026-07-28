@@ -16,10 +16,10 @@ const emitter = require('../realtime/emitter');
  * Transition a worker to `toStatus` and fan out the side effects.
  * @param {Document} worker  a Mongoose Worker document (mutated + saved)
  * @param {string}   toStatus
- * @param {object}   opts { actor='system', reason='', trialJob=null, emit=true }
+ * @param {object}   opts { actor='system', reason='', trialJob=null, assessment=null, emit=true }
  */
 async function transitionWorker(worker, toStatus, opts = {}) {
-  const { actor = 'system', reason = '', trialJob = null, emit = true } = opts;
+  const { actor = 'system', reason = '', trialJob = null, assessment = null, emit = true } = opts;
   const fromStatus = worker.status;
 
   // No-op guard: don't log/emit a transition that changes nothing.
@@ -38,6 +38,7 @@ async function transitionWorker(worker, toStatus, opts = {}) {
       actor,
       reason,
       trialJob,
+      assessment,
     });
   } catch (err) {
     console.error(`[worker-status] failed to log transition ${fromStatus}→${toStatus}:`, err.message);

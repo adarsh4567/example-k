@@ -4,6 +4,8 @@ const Worker = require('../models/Worker');
 const { notifyWorker } = require('../services/notificationService');
 const { transitionWorker } = require('../services/workerStatusService');
 const { TRIAL_ENABLED } = require('../config/trialConfig');
+const { ASSESSMENT_ENABLED, ASSESSMENT_CATEGORY } = require('../config/assessmentConfig');
+const { resolveWorkerCategory } = require('../utils/workerCategory');
 const { ok, fail } = require('../utils/response');
 
 // POST /api/admin/login  { email, password }
@@ -72,15 +74,41 @@ function ensureDecidable(worker, res) {
 }
 
 // POST /api/admin/workers/:id/approve
-// Clears application review. When the trial filter is enabled (default), this
-// does NOT fully approve the worker — it moves them to `pending_trial`, and the
-// worker only reaches `approved` after passing the trial job (Filter 2). With
-// TRIAL_ENABLED=false it keeps its legacy meaning (straight to `approved`).
+// Clears application review. This does NOT fully approve the worker — it moves
+// them into whichever post-review filter applies to their trade, and they only
+// reach `approved` after passing it:
+//
+//   electricians → `pending_assessment` (Filter 3: in-person shop assessment).
+//                  They skip the video task and the trial job entirely.
+//   everyone else → `pending_trial` (Filter 2: subsidised trial job).
+//
+// With both filters disabled it keeps its legacy meaning (straight to `approved`).
 async function approveWorker(req, res, next) {
   try {
     const worker = await Worker.findById(req.params.id);
     if (!worker) return fail(res, 'Worker not found', 404);
     if (!ensureDecidable(worker, res)) return;
+
+    // Filter 3 takes precedence for electricians.
+    if (ASSESSMENT_ENABLED && resolveWorkerCategory(worker) === ASSESSMENT_CATEGORY) {
+      await transitionWorker(worker, 'pending_assessment', {
+        actor: req.admin.email,
+        reason: req.body.message || 'Application review cleared — shop assessment pending',
+      });
+      worker.electricalAssessment.stage = 'awaiting_booking';
+      await worker.save();
+
+      await notifyWorker(worker, {
+        title: 'Application review cleared ✅',
+        message:
+          'Great news — the next step is a short hands-on skill check at an electrical shop near you. Open the app to book a slot.',
+      });
+      return ok(
+        res,
+        { worker: { id: worker._id, status: worker.status } },
+        'Worker moved to pending shop assessment'
+      );
+    }
 
     if (TRIAL_ENABLED) {
       await transitionWorker(worker, 'pending_trial', {

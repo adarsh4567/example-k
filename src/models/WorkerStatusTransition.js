@@ -19,6 +19,8 @@ const workerStatusTransitionSchema = new mongoose.Schema(
     reason: { type: String, default: '' },
     // Optional link to the trial job that caused the transition (if any).
     trialJob: { type: mongoose.Schema.Types.ObjectId, ref: 'TrialJob', default: null },
+    // Optional link to the shop assessment that caused the transition (Filter 3).
+    assessment: { type: mongoose.Schema.Types.ObjectId, ref: 'WorkerAssessment', default: null },
   },
   { timestamps: true }
 );

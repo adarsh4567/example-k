@@ -4,6 +4,7 @@ const { isValidAadhaar, isValidPincode, isValidPhone, isValidOtp, ageFromDob } =
 const { requestAadhaarOtp, verifyAadhaarOtp, requestEsignOtp, verifyEsignOtp } = require('../services/aadhaarService');
 const { matchFaces } = require('../services/faceMatchService');
 const { OPERATING_CITIES } = require('../services/placesService');
+const { isValidCategory, isValidSubcategory } = require('../services/serviceCatalog');
 
 const STEPS = Worker.STEPS;
 const nextStep = (step) => {
@@ -206,15 +207,32 @@ async function updateWorkDetails(req, res, next) {
     if (!ensureEditable(worker, res)) return;
 
     const {
-      cleaningTypes, experience, workedBefore, prevPlatform,
+      primaryCategory, skills, cleaningTypes, experience, workedBefore, prevPlatform,
       ownsEquipment, equipmentList, workingHours, workingDays,
     } = req.body;
 
-    if (!Array.isArray(cleaningTypes) || cleaningTypes.length === 0) {
-      return fail(res, 'Select at least one type of cleaning you can do', 422);
+    // This screen was originally cleaning-only. It now carries the worker's trade
+    // so the right post-review filter can be applied (electricians go to the shop
+    // assessment, everyone else to a trial job). `primaryCategory` is optional and
+    // defaults to 'cleaning', so existing clients keep working unchanged; `skills`
+    // is an alias for `cleaningTypes` that reads correctly for other trades.
+    const category = primaryCategory ? String(primaryCategory).trim() : 'cleaning';
+    if (!isValidCategory(category)) {
+      return fail(res, `Invalid primaryCategory: ${category}`, 422);
     }
-    const badType = cleaningTypes.find((t) => !VALID_CLEANING_TYPES.includes(t));
-    if (badType) return fail(res, `Invalid cleaning type: ${badType}`, 422);
+
+    const selectedSkills = Array.isArray(skills) ? skills : cleaningTypes;
+    if (!Array.isArray(selectedSkills) || selectedSkills.length === 0) {
+      return fail(
+        res,
+        category === 'cleaning'
+          ? 'Select at least one type of cleaning you can do'
+          : 'Select at least one type of work you can do',
+        422
+      );
+    }
+    const badType = selectedSkills.find((t) => !isValidSubcategory(category, t));
+    if (badType) return fail(res, `Invalid ${category} skill: ${badType}`, 422);
 
     if (!['lt_1', '1_3', '3_5', 'gt_5'].includes(experience)) {
       return fail(res, 'Select a valid experience range', 422);
@@ -227,7 +245,8 @@ async function updateWorkDetails(req, res, next) {
     }
 
     const work = {
-      cleaningTypes,
+      primaryCategory: category,
+      cleaningTypes: selectedSkills,
       experience,
       workedBefore: !!workedBefore,
       workingHours,
@@ -243,9 +262,14 @@ async function updateWorkDetails(req, res, next) {
     }
     if (work.ownsEquipment) {
       const eq = Array.isArray(equipmentList) ? equipmentList : [];
-      const badEq = eq.find((e) => !VALID_EQUIPMENT.includes(e));
-      if (badEq) return fail(res, `Invalid equipment item: ${badEq}`, 422);
-      work.equipmentList = eq;
+      // VALID_EQUIPMENT is the cleaning kit list, so it is only enforced for
+      // cleaners. Other trades bring their own tools (an electrician's tester and
+      // screwdriver set is not in that list) and are accepted as free text.
+      if (category === 'cleaning') {
+        const badEq = eq.find((e) => !VALID_EQUIPMENT.includes(e));
+        if (badEq) return fail(res, `Invalid equipment item: ${badEq}`, 422);
+      }
+      work.equipmentList = eq.map(String);
     }
 
     worker.work = work;

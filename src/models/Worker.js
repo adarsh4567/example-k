@@ -23,6 +23,21 @@ const APPLICATION_STATUS = [
   'trial_in_progress', // worker started the trial job
   'trial_completed',   // worker finished; awaiting customer feedback + decision
 
+  // ── Filter 3: Electrical Shop Assessment ──
+  // Electricians do NOT do the video task or the trial job. Instead they attend a
+  // 45-minute hands-on assessment at a partner electrical shop. These statuses
+  // drive the assessment screens and are set server-side only (see
+  // services/workerStatusService).
+  // Names are fixed by the worker app's routing table (ASSESSMENT_STATUSES in
+  // its AuthContext): anything not in that set falls through to the generic
+  // "application submitted" screen, so do NOT rename these without the app.
+  'pending_assessment',            // cleared review, must book an assessment slot
+  'assessment_booked',             // a slot is booked (upcoming)
+  'assessment_checked_in',         // worker checked in at the shop; session under way
+  'assessment_feedback_submitted', // shop owner submitted feedback; awaiting admin decision
+  'assessment_approved',           // passed — worker is shown their certificate
+  'assessment_rejected',           // failed — worker is shown the tailored rejection screen
+
   'approved',      // fully approved — can accept normal jobs (dispatch gate)
   'rejected',
 ];
@@ -125,6 +140,14 @@ const workerSchema = new mongoose.Schema(
 
     // Screen 6 — work details & skills
     work: {
+      // Which trade the worker is applying for — a serviceCatalog category key.
+      // Defaults to 'cleaning' so every worker created before this field existed
+      // keeps its original meaning. Drives which onboarding filter applies:
+      // 'electrical' → shop assessment (Filter 3); everything else → trial job.
+      // Resolved via utils/workerCategory.resolveWorkerCategory().
+      primaryCategory: { type: String, default: 'cleaning' },
+      // Selected subcategories for `primaryCategory`. Named for its cleaning-only
+      // origin; validated against the catalog entry for whatever the category is.
       cleaningTypes: [String],
       experience: { type: String, enum: ['lt_1', '1_3', '3_5', 'gt_5'] },
       workedBefore: Boolean,
@@ -175,6 +198,39 @@ const workerSchema = new mongoose.Schema(
       duplicateSuspected: { type: Boolean, default: false }, // same size+duration for both tasks
       reapplyAllowedAt: Date,                      // set 60d out on permanent rejection
       staleAlerted: { type: Boolean, default: false }, // reviewer-SLA alert already sent
+    },
+
+    // ── Filter 3: Electrical Shop Assessment ──
+    // High-level state of the in-person shop assessment. Per-assessment records
+    // (slot, feedback, payout) live in the WorkerAssessment collection; this block
+    // holds the cross-attempt counters that gate re-booking.
+    electricalAssessment: {
+      stage: {
+        type: String,
+        enum: [
+          'not_started',
+          'awaiting_booking',   // eligible, no slot booked yet
+          'booked',
+          'checked_in',
+          'awaiting_decision',  // feedback in, admin reviewing
+          'approved',
+          'rejected',
+        ],
+        default: 'not_started',
+      },
+      attempt: { type: Number, default: 1 },
+      // Cumulative across all attempts — drives the 2-strike booking suspension.
+      noShowCount: { type: Number, default: 0 },
+      cancellationCount: { type: Number, default: 0 },
+      // Set when repeated no-shows pause booking (NO_SHOW_SUSPENSION_DAYS out).
+      bookingSuspendedUntil: { type: Date, default: null },
+      // Set on rejection (REAPPLY_COOLDOWN_DAYS out).
+      reapplyAllowedAt: { type: Date, default: null },
+      // Flagged for ops after repeated cancellations.
+      flaggedForReview: { type: Boolean, default: false },
+      // "Kaaryo Verified Electrician" certificate, issued on approval.
+      certificateIssuedAt: { type: Date, default: null },
+      certificateId: { type: String, default: null },
     },
 
     // ── Profile (editable anytime, post-onboarding) ──
