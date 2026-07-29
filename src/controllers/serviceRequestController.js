@@ -29,8 +29,11 @@ async function customerView(request) {
     currency: request.pricing ? request.pricing.currency : null,
     address: request.address,
     location: request.location,
-    radiusKm: request.radiusKm,
-    wave: request.wave,
+    // Search telemetry for the "finding a professional" screen. Coalesced to null
+    // rather than left undefined so the key is always present in the JSON — an
+    // absent field made clients render "within undefined km".
+    radiusKm: request.radiusKm ?? request.initialRadiusKm ?? null,
+    wave: request.wave ?? null,
     workersNotified: request.offers.length,
     createdAt: request.createdAt,
   };

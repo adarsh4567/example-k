@@ -110,8 +110,6 @@ async function dispatchWave(request) {
   const alreadyOffered = request.offers.map((o) => o.worker);
   const workers = await findNearbyWorkers(request, request.radiusKm, alreadyOffered);
 
-  if (!workers.length) return 0;
-
   const now = new Date();
   workers.forEach((w) => {
     request.offers.push({
@@ -122,8 +120,27 @@ async function dispatchWave(request) {
       offeredAt: now,
     });
   });
+
+  // Persist the wave — the timer AND the radiusKm/wave the caller just set —
+  // even when this wave found nobody.
+  //
+  // This used to `return 0` before saving whenever no workers matched, which
+  // silently stranded the request:
+  //   • dispatchExpiresAt was never written, so the sweeper's
+  //     `dispatchExpiresAt: {$lte: now}` could never match it (that predicate
+  //     skips missing fields) — the radius never expanded and the request never
+  //     expired. It sat in `searching` forever.
+  //   • radiusKm/wave were never written either, so the customer's GET reported
+  //     `wave: 0` and no `radiusKm` while the POST response (built from the
+  //     in-memory doc) said radiusKm 3 / wave 1.
+  // When an EXPANDING wave found nobody it was worse: expandOrExpire had already
+  // bumped radiusKm/wave in memory, so the stale — already elapsed —
+  // dispatchExpiresAt stayed in the DB and the sweeper re-picked the same
+  // request every 5s indefinitely, re-running the geo query each time.
   request.dispatchExpiresAt = new Date(now.getTime() + WAVE_TIMEOUT_SECONDS * 1000);
   await request.save();
+
+  if (!workers.length) return 0;
 
   workers.forEach((w) => {
     // Primary path: push the offer live to the worker's socket (no polling).
@@ -324,9 +341,23 @@ async function sweepOnce() {
   if (sweeping) return; // avoid overlapping runs
   sweeping = true;
   try {
+    // Second clause self-heals stragglers: `searching` requests carrying no wave
+    // timer at all. New requests can't reach this state any more (dispatchWave
+    // always writes the timer), but rows stranded by the old early-return are
+    // already in the DB and would otherwise stay `searching` forever. The age
+    // floor keeps it off requests still mid-creation — there is a brief window
+    // between createRequest's save and the first wave's save.
+    // ({ field: null } matches both an explicit null and a missing field.)
+    const now = new Date();
     const due = await ServiceRequest.find({
       status: 'searching',
-      dispatchExpiresAt: { $lte: new Date() },
+      $or: [
+        { dispatchExpiresAt: { $lte: now } },
+        {
+          dispatchExpiresAt: null,
+          createdAt: { $lte: new Date(now.getTime() - WAVE_TIMEOUT_SECONDS * 1000) },
+        },
+      ],
     }).limit(50);
 
     for (const request of due) {
