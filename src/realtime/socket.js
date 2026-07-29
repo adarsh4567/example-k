@@ -35,6 +35,8 @@ function init(httpServer) {
       const token = socket.handshake.auth && socket.handshake.auth.token;
       if (!token) return next(new Error('Auth token missing'));
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // This channel is worker-only; customer tokens carry type:'user'.
+      if (decoded.type && decoded.type !== 'worker') return next(new Error('Worker token required'));
       const worker = await Worker.findById(decoded.id);
       if (!worker) return next(new Error('Worker not found'));
       socket.workerId = String(worker._id);

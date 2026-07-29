@@ -10,6 +10,11 @@ module.exports = async function auth(req, res, next) {
     if (!token) return fail(res, 'Authentication token missing', 401);
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Customer tokens are signed with the same secret and carry type:'user'.
+    // Reject them explicitly rather than relying on the Worker lookup missing.
+    if (decoded.type && decoded.type !== 'worker') {
+      return fail(res, 'This endpoint requires a worker token', 401);
+    }
     const worker = await Worker.findById(decoded.id);
     if (!worker) return fail(res, 'Worker not found', 401);
 

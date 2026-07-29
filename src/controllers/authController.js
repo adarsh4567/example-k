@@ -28,7 +28,9 @@ async function sendOtp(req, res, next) {
     const { phone } = req.body;
     if (!isValidPhone(phone)) return fail(res, 'Enter a valid 10-digit mobile number', 422);
 
-    const existing = await Otp.findOne({ phone });
+    // Scoped to purpose:'worker' — the customer app has its own OTP flow for the
+    // same number (see userAuthController); neither may consume the other's code.
+    const existing = await Otp.findOne({ phone, purpose: 'worker' });
     if (existing) {
       const since = (Date.now() - new Date(existing.lastSentAt).getTime()) / 1000;
       if (since < RESEND_COOLDOWN) {
@@ -39,9 +41,10 @@ async function sendOtp(req, res, next) {
     const code = generateCode();
     const now = new Date();
     await Otp.findOneAndUpdate(
-      { phone },
+      { phone, purpose: 'worker' },
       {
         phone,
+        purpose: 'worker',
         code,
         expiresAt: new Date(now.getTime() + OTP_EXPIRY_MIN * 60 * 1000),
         lastSentAt: now,
@@ -69,7 +72,7 @@ async function verifyOtp(req, res, next) {
     if (!isValidPhone(phone)) return fail(res, 'Enter a valid 10-digit mobile number', 422);
     if (!isValidOtp(otp)) return fail(res, 'Enter a valid OTP', 422);
 
-    const record = await Otp.findOne({ phone });
+    const record = await Otp.findOne({ phone, purpose: 'worker' });
     if (!record) return fail(res, 'OTP expired or not requested. Please request a new one', 400);
     if (record.code !== otp) {
       record.attempts += 1;
@@ -78,7 +81,7 @@ async function verifyOtp(req, res, next) {
     }
 
     // OTP correct — consume it.
-    await Otp.deleteOne({ phone });
+    await Otp.deleteOne({ phone, purpose: 'worker' });
 
     // Screen 1 note: check if this number already has an account and redirect accordingly.
     let worker = await Worker.findOne({ phone });

@@ -22,6 +22,8 @@ const trialWorkerRoutes = require('./src/routes/trialWorkerRoutes');
 const trialFeedbackRoutes = require('./src/routes/trialFeedbackRoutes');
 const assessmentWorkerRoutes = require('./src/routes/assessmentWorkerRoutes');
 const assessmentPartnerRoutes = require('./src/routes/assessmentPartnerRoutes');
+const userAuthRoutes = require('./src/routes/userAuthRoutes');
+const userProfileRoutes = require('./src/routes/userProfileRoutes');
 const dispatchService = require('./src/services/dispatchService');
 const videoJobsService = require('./src/services/videoJobsService');
 const trialJobsService = require('./src/services/trialJobsService');
@@ -68,6 +70,9 @@ app.use('/api/public/trial-feedback', trialFeedbackRoutes);
 app.use('/api/worker/assessment', assessmentWorkerRoutes);
 // Public (token-authenticated) shop-owner feedback form — the owner has no account.
 app.use('/api/partner/assessment', assessmentPartnerRoutes);
+// Customer ("user") app — phone+OTP login and the name-only profile.
+app.use('/api/user/auth', userAuthRoutes);
+app.use('/api/user/profile', userProfileRoutes);
 
 // 404 + error handling
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
