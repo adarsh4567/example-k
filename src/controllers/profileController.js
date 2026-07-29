@@ -4,6 +4,7 @@ const {
   SERVICE_CATALOG, isValidCategory, isValidSubcategory, buildExpertiseView,
 } = require('../services/serviceCatalog');
 const SpecializationSubmission = require('../models/SpecializationSubmission');
+const { resolveWorkerCategory } = require('../utils/workerCategory');
 
 // Latest submission status per (category, subcategory) for a worker, so the
 // profile can show "pending" / "rejected" pills on not-yet-active skills.
@@ -21,14 +22,21 @@ async function buildSubmissionStatusMap(workerId) {
   return map;
 }
 
-// Resolve a worker's active expertise selections. Falls back to the onboarding
-// cleaning types when the worker has never explicitly edited their expertise.
+// Resolve a worker's active expertise selections. Falls back to the skills chosen
+// at onboarding (work.cleaningTypes) for workers whose `expertise` array is still
+// empty — i.e. anyone who registered before onboarding started persisting it.
+//
+// The fallback used to hard-code `category: 'cleaning'`, which silently mislabelled
+// every non-cleaning worker: an electrician's ['wiring','switch_socket'] came back
+// as *cleaning* subcategories, buildExpertiseView filtered them out as invalid for
+// that category, and the profile rendered no expertise at all. It now uses the
+// worker's declared trade.
 function resolveSelections(worker) {
   if (Array.isArray(worker.expertise) && worker.expertise.length) {
     return worker.expertise.map((e) => ({ category: e.category, subcategories: e.subcategories || [] }));
   }
-  const cleaningTypes = (worker.work && worker.work.cleaningTypes) || [];
-  return cleaningTypes.length ? [{ category: 'cleaning', subcategories: cleaningTypes }] : [];
+  const skills = (worker.work && worker.work.cleaningTypes) || [];
+  return skills.length ? [{ category: resolveWorkerCategory(worker), subcategories: skills }] : [];
 }
 
 // Format a 10-digit Indian number as "+91 98765 43210".
@@ -116,11 +124,23 @@ async function updateExpertise(req, res, next) {
 
     worker.expertise = normalized;
 
-    // Keep onboarding work.cleaningTypes mirrored with the cleaning category so
-    // job-matching and the onboarding submit check stay consistent.
-    const cleaning = normalized.find((e) => e.category === 'cleaning');
+    // Keep the onboarding `work` block mirrored with the worker's PRIMARY category
+    // so job-matching's fallback and the submit completeness check stay consistent.
+    //
+    // This used to mirror the `cleaning` entry unconditionally, which wiped
+    // work.cleaningTypes for any non-cleaning worker the moment they edited their
+    // expertise — taking their skills list (and the dispatch fallback that reads it)
+    // with it.
     if (!worker.work) worker.work = {};
-    worker.work.cleaningTypes = cleaning ? cleaning.subcategories : [];
+    const primary = resolveWorkerCategory(worker);
+    let primaryEntry = normalized.find((e) => e.category === primary);
+    // If they dropped their primary category entirely, adopt the first remaining
+    // one rather than leaving `work` pointing at a category they no longer offer.
+    if (!primaryEntry && normalized.length) {
+      primaryEntry = normalized[0];
+      worker.work.primaryCategory = primaryEntry.category;
+    }
+    worker.work.cleaningTypes = primaryEntry ? primaryEntry.subcategories : [];
 
     await worker.save();
     return ok(res, { profile: await buildProfilePayload(worker) }, 'Expertise updated');

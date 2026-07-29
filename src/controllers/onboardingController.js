@@ -299,6 +299,28 @@ async function updateWorkDetails(req, res, next) {
     }
 
     worker.work = work;
+
+    // Persist the declared trade + skills into `expertise` as well.
+    //
+    // `expertise` was previously only ever written by the post-onboarding profile
+    // screen, and was "backfilled" from work.cleaningTypes at READ time. That left
+    // the stored array empty after onboarding, which broke two things:
+    //   1. the profile showed no expertise at all, and
+    //   2. dispatch matches on `expertise` ($elemMatch on category/subcategory),
+    //      with a legacy fallback that only applied to cleaning — so an approved
+    //      electrician was invisible to job matching entirely.
+    // Writing it here means the array reflects reality from the moment the worker
+    // declares it, for every trade.
+    //
+    // Merge, don't replace: a worker re-submitting this screen must not lose
+    // specializations approved in other categories. The declared category goes
+    // first, so utils/workerCategory's expertise fallback still resolves to it.
+    const uniqueSkills = Array.from(new Set(selectedSkills));
+    const otherCategories = (Array.isArray(worker.expertise) ? worker.expertise : []).filter(
+      (e) => e && e.category !== category
+    );
+    worker.expertise = [{ category, subcategories: uniqueSkills }, ...otherCategories];
+
     // Advances to `references` — the video task is not in STEPS, so an
     // electrician needs no special-casing here to skip it.
     advance(worker, 'work_details');

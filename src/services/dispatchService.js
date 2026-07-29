@@ -36,10 +36,30 @@ function eligibilityQuery(category, subcategory, excludeWorkerIds) {
   };
 
   const orClauses = [expertiseMatch];
-  // Legacy cleaning workers who never edited expertise: fall back to work.cleaningTypes.
-  if (category === 'cleaning') {
-    orClauses.push(subcategory ? { 'work.cleaningTypes': subcategory } : { 'work.cleaningTypes.0': { $exists: true } });
-  }
+
+  // Fallback for workers whose `expertise` array is still empty — anyone who
+  // onboarded before it started being persisted. Their trade + skills live on
+  // `work.primaryCategory` / `work.cleaningTypes`.
+  //
+  // This fallback used to be gated on `category === 'cleaning'`, from when the
+  // funnel was cleaning-only. That made an approved electrician with an empty
+  // expertise array match NEITHER clause, so dispatch could never offer them a
+  // job — they were fully approved and certified but invisible. It now matches the
+  // worker's own declared trade.
+  const skillMatch = subcategory
+    ? { 'work.cleaningTypes': subcategory }
+    : { 'work.cleaningTypes.0': { $exists: true } };
+
+  // `work.primaryCategory` is absent on documents created before that field
+  // existed; those are cleaning workers by definition, so treat missing as
+  // 'cleaning' rather than excluding them.
+  // ({ field: null } matches both an explicit null and a missing field.)
+  const categoryIsOrDefaults =
+    category === 'cleaning'
+      ? { $or: [{ 'work.primaryCategory': 'cleaning' }, { 'work.primaryCategory': null }] }
+      : { 'work.primaryCategory': category };
+
+  orClauses.push({ $and: [categoryIsOrDefaults, skillMatch] });
 
   return {
     status: 'approved',

@@ -3,6 +3,7 @@ const SpecializationSubmission = require('../models/SpecializationSubmission');
 const s3 = require('../services/s3Service');
 const { isValidCategory, isValidSubcategory } = require('../services/serviceCatalog');
 const { buildProfilePayload } = require('./profileController');
+const { resolveWorkerCategory } = require('../utils/workerCategory');
 const { ok, fail } = require('../utils/response');
 
 const MIN_SECONDS = Number(process.env.VIDEO_MIN_SECONDS) || 30;
@@ -12,10 +13,14 @@ const MAX_SECONDS = Number(process.env.VIDEO_MAX_SECONDS) || 180;
 // Mirrors resolveSelections() in profileController (expertise, falling back to
 // onboarding cleaning types).
 function isActiveSpecialization(worker, category, subcategory) {
+  // The implicit fallback keys off the worker's declared trade, not 'cleaning' —
+  // otherwise an electrician with an empty `expertise` array looked as though they
+  // held none of their own skills, and would be asked to record a video for a
+  // specialization they already have.
   const expertise = Array.isArray(worker.expertise) && worker.expertise.length
     ? worker.expertise
     : ((worker.work && worker.work.cleaningTypes && worker.work.cleaningTypes.length)
-      ? [{ category: 'cleaning', subcategories: worker.work.cleaningTypes }]
+      ? [{ category: resolveWorkerCategory(worker), subcategories: worker.work.cleaningTypes }]
       : []);
   const entry = expertise.find((e) => e.category === category);
   return !!(entry && (entry.subcategories || []).includes(subcategory));

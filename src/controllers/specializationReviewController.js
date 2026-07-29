@@ -3,6 +3,7 @@ const SpecializationSubmission = require('../models/SpecializationSubmission');
 const s3 = require('../services/s3Service');
 const { categoryName, subcategoryName } = require('../services/serviceCatalog');
 const { notifyWorker } = require('../services/notificationService');
+const { resolveWorkerCategory } = require('../utils/workerCategory');
 const { ok, fail } = require('../utils/response');
 
 // Grant the specialization on the worker: add the subcategory to their active
@@ -14,10 +15,15 @@ const { ok, fail } = require('../utils/response');
 // fallback here (mirrors resolveSelections in profileController), otherwise the
 // first approval would overwrite the implicit skills and wipe them out.
 function grantSpecialization(worker, category, subcategory) {
+  // The implicit fallback must use the worker's DECLARED trade, not 'cleaning'.
+  // Hard-coding it meant granting any specialization to an electrician whose
+  // `expertise` was still empty rewrote their electrical skills as *cleaning*
+  // subcategories — corrupting the profile and the dispatch match.
+  const implicitCategory = resolveWorkerCategory(worker);
   const current = (Array.isArray(worker.expertise) && worker.expertise.length)
     ? worker.expertise.map((e) => ({ category: e.category, subcategories: (e.subcategories || []).slice() }))
     : ((worker.work && worker.work.cleaningTypes && worker.work.cleaningTypes.length)
-      ? [{ category: 'cleaning', subcategories: worker.work.cleaningTypes.slice() }]
+      ? [{ category: implicitCategory, subcategories: worker.work.cleaningTypes.slice() }]
       : []);
 
   let entry = current.find((e) => e.category === category);
@@ -31,7 +37,11 @@ function grantSpecialization(worker, category, subcategory) {
 
   worker.expertise = current;
 
-  if (category === 'cleaning') {
+  // Mirror the worker's primary category into the onboarding `work` block (the
+  // dispatch fallback and the submit check both read it). Previously mirrored only
+  // for 'cleaning', so an electrician gaining an electrical subcategory left
+  // work.cleaningTypes stale.
+  if (category === implicitCategory) {
     if (!worker.work) worker.work = {};
     worker.work.cleaningTypes = entry.subcategories.slice();
   }
