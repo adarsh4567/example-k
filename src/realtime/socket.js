@@ -1,42 +1,80 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const Worker = require('../models/Worker');
+const User = require('../models/User');
 const ServiceRequest = require('../models/ServiceRequest');
 const dispatch = require('../services/dispatchService');
 const { offerView, assignedView } = require('../utils/jobPayload');
+const { customerView } = require('../utils/requestPayload');
 const emitter = require('./emitter');
 
 /**
- * Real-time channel for workers.
+ * Real-time channel for BOTH apps, on one Socket.IO server.
  *
- * Handshake: pass the worker JWT as `auth.token` (socket.io-client:
+ * Handshake (identical for both): pass the JWT as `auth.token` (socket.io-client:
  *   io(url, { auth: { token } })).
  *
- * Server → worker events:
+ * The `type` claim on the token decides which audience a socket belongs to and
+ * therefore which room it joins and which events it can send. A worker token gets
+ * the worker channel, a user token gets the customer channel, and neither can
+ * reach the other's events — the two share JWT_SECRET, so this claim is the whole
+ * boundary (same rule as middleware/auth vs middleware/userAuth on the REST side).
+ *
+ * ── Worker channel (unchanged) ──────────────────────────────────
+ * Server → worker:
  *   jobs:open   { jobs:[offer] }   snapshot of open offers on connect (no polling)
  *   job:offer   offer               a new job was dispatched to this worker
  *   job:taken   { id }              another worker took a job you were offered
  *   job:expired { id }              a job you were offered expired with no taker
  *
- * Worker → server events (with ack callback):
+ * Worker → server (with ack callback):
  *   job:accept  { requestId }  ->  { ok, job } | { ok:false, message }
  *   job:decline { requestId }  ->  { ok } | { ok:false, message }
  *   presence:update { isOnline?, lat?, lng? } -> { ok, availability }
+ *
+ * ── Customer channel ────────────────────────────────────────────
+ * Server → customer (every payload carries the SAME `request` shape the REST
+ * endpoints return, so one parser handles both transports):
+ *   requests:active   { requests:[request] }  snapshot of live requests on connect
+ *   request:searching { request, newlyOffered }  a wave went out / radius grew
+ *   request:accepted  { request }   a professional took the job (worker card inside)
+ *   request:expired   { request, reason }  nobody accepted; `canRetry` says if
+ *                                          the retry button should be live
+ *   request:work_done { request }   worker marked the work done → payment is due
+ *   request:completed { request }   worker submitted their rating → job closed
+ *   request:paid      { request }   payment captured and the worker credited
+ *   request:cancelled { request }
+ *
+ * Customer → server: none. Everything the customer does (raise, cancel, retry,
+ * pay) is a REST call — those are state-changing, need request bodies and proper
+ * status codes, and must work when the socket is down. The socket is a read-only
+ * push channel for them.
  */
+
 function init(httpServer) {
   const io = new Server(httpServer, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
   });
   emitter.setIo(io);
 
-  // Authenticate every socket via the worker JWT before it connects.
+  // Authenticate every socket before it connects, and tag it with its audience.
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth && socket.handshake.auth.token;
       if (!token) return next(new Error('Auth token missing'));
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      // This channel is worker-only; customer tokens carry type:'user'.
-      if (decoded.type && decoded.type !== 'worker') return next(new Error('Worker token required'));
+
+      if (decoded.type === 'user') {
+        const user = await User.findById(decoded.id);
+        if (!user) return next(new Error('User not found'));
+        if (user.status === 'blocked') return next(new Error('This account has been blocked'));
+        socket.userId = String(user._id);
+        return next();
+      }
+
+      // No `type` claim means a worker token issued before the customer app
+      // existed — those are still valid, so absent is treated as 'worker'.
+      if (decoded.type && decoded.type !== 'worker') return next(new Error('Unsupported token type'));
       const worker = await Worker.findById(decoded.id);
       if (!worker) return next(new Error('Worker not found'));
       socket.workerId = String(worker._id);
@@ -47,6 +85,11 @@ function init(httpServer) {
   });
 
   io.on('connection', async (socket) => {
+    // Customer sockets take the read-only path and never register the worker
+    // handlers below — so a user token cannot accept a job even by emitting
+    // `job:accept` directly, because no listener is bound for it.
+    if (socket.userId) return initCustomerSocket(socket);
+
     socket.join(emitter.room(socket.workerId));
     console.log(`🔌 worker socket CONNECTED: ${socket.workerId} · rooms: ${JSON.stringify([...socket.rooms])}`);
     socket.on('disconnect', (reason) => {
@@ -115,8 +158,36 @@ function init(httpServer) {
     });
   });
 
-  console.log('🔌 Socket.IO real-time channel ready (worker offers pushed live)');
+  console.log('🔌 Socket.IO real-time channel ready (worker offers + customer request updates pushed live)');
   return io;
+}
+
+/**
+ * The customer half of the connection. Read-only: it joins the customer's room to
+ * receive `request:*` pushes and sends one snapshot so a freshly-opened app is
+ * correct immediately, without a polling round trip.
+ */
+async function initCustomerSocket(socket) {
+  socket.join(emitter.userRoom(socket.userId));
+  console.log(`🔌 customer socket CONNECTED: ${socket.userId}`);
+  socket.on('disconnect', (reason) => {
+    console.log(`🔌 customer socket DISCONNECTED: ${socket.userId} (${reason})`);
+  });
+
+  // Snapshot on connect — this is what makes the flow survive an app restart
+  // mid-search. A request whose timer is still running comes back with its
+  // remaining seconds, so the countdown resumes at the right number instead of
+  // starting over at 60. Same predicate as GET /active, by construction.
+  try {
+    const live = await ServiceRequest.find(ServiceRequest.liveForUserQuery(socket.userId))
+      .sort({ createdAt: -1 })
+      .limit(10);
+    socket.emit('requests:active', {
+      requests: await Promise.all(live.map((r) => customerView(r))),
+    });
+  } catch (err) {
+    /* non-fatal — the customer app's polling GET covers this */
+  }
 }
 
 module.exports = { init };

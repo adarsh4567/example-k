@@ -9,6 +9,7 @@
     "seed:admin": "node src/scripts/seedAdmin.js",
     "seed:shops": "node src/scripts/seedShopPartners.js",
     "worker-client": "node scripts/worker-client.js",
+    "user-client": "node scripts/user-client.js",
     "test:trial": "node src/scripts/testTrialDecision.js"
   },
   "keywords": [

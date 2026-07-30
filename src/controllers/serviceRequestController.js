@@ -1,10 +1,23 @@
 const ServiceRequest = require('../models/ServiceRequest');
-const Worker = require('../models/Worker');
 const { ok, fail } = require('../utils/response');
 const { isValidPhone } = require('../utils/validators');
 const { isValidCategory, isValidSubcategory } = require('../services/serviceCatalog');
 const { computePriceBreakdown } = require('../services/pricingService');
 const dispatch = require('../services/dispatchService');
+const { customerView } = require('../utils/requestPayload');
+
+/**
+ * LEGACY unauthenticated request endpoints, kept for test scripts and for driving
+ * dispatch by hand from a REST client. They predate the customer app having
+ * accounts, so they take the customer's name and phone in the body and leave
+ * `user` null on the row.
+ *
+ * The real customer app uses /api/user/service-requests (see
+ * userServiceRequestController), which is account-scoped and additionally
+ * supports retry and payment. A request created here has no owner, so it is
+ * invisible to those endpoints and gets no live customer push — dispatch to
+ * workers, acceptance and completion all behave identically.
+ */
 
 const JOB_DESCRIPTION_MAX_LENGTH = 500;
 
@@ -13,51 +26,6 @@ function validCoord(lat, lng) {
     typeof lat === 'number' && typeof lng === 'number' &&
     lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
   );
-}
-
-// Public view of a request for the customer (hides worker contact until accepted).
-async function customerView(request) {
-  const base = {
-    id: request._id,
-    status: request.status,
-    category: request.category,
-    subcategory: request.subcategory,
-    jobDescription: request.jobDescription,
-    // Customer sees only the total they'll pay — the platform/worker split is
-    // worker- and platform-internal, not shown here.
-    totalPrice: request.pricing ? request.pricing.totalPrice : null,
-    currency: request.pricing ? request.pricing.currency : null,
-    address: request.address,
-    location: request.location,
-    // Search telemetry for the "finding a professional" screen. Coalesced to null
-    // rather than left undefined so the key is always present in the JSON — an
-    // absent field made clients render "within undefined km".
-    radiusKm: request.radiusKm ?? request.initialRadiusKm ?? null,
-    wave: request.wave ?? null,
-    workersNotified: request.offers.length,
-    createdAt: request.createdAt,
-  };
-
-  if (['in_progress', 'pending_rating', 'completed'].includes(request.status)) {
-    const worker = await Worker.findById(request.acceptedBy)
-      .select('fullName phone rating jobsCompleted currentLocation');
-    if (worker) {
-      const acceptedOffer = request.offers.find((o) => String(o.worker) === String(worker._id));
-      base.worker = {
-        id: worker._id,
-        name: worker.fullName,
-        phone: worker.phone, // revealed after acceptance
-        rating: worker.rating,
-        jobsCompleted: worker.jobsCompleted,
-        distanceKm: acceptedOffer ? acceptedOffer.distanceKm : null,
-      };
-    }
-    base.acceptedAt = request.acceptedAt;
-  }
-  if (request.status === 'completed') base.completedAt = request.completedAt;
-  if (request.status === 'cancelled') base.cancelledAt = request.cancelledAt;
-  if (request.status === 'expired') base.expiredAt = request.expiredAt;
-  return base;
 }
 
 // POST /api/service-requests

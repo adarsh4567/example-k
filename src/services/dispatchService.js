@@ -4,6 +4,17 @@ const ServiceRequest = require('../models/ServiceRequest');
 const { notifyWorker } = require('./notificationService');
 const emitter = require('../realtime/emitter');
 const { offerView } = require('../utils/jobPayload');
+const paymentService = require('./paymentService');
+const {
+  INITIAL_RADIUS_KM,
+  RADIUS_INCREMENT_KM,
+  MAX_RADIUS_KM,
+  BATCH_SIZE,
+  WAVE_TIMEOUT_SECONDS,
+  SEARCH_WINDOW_SECONDS,
+  SWEEP_INTERVAL_SECONDS,
+  MAX_ATTEMPTS,
+} = require('../config/dispatchConfig');
 
 /**
  * Dispatch engine for on-demand service requests.
@@ -15,16 +26,23 @@ const { offerView } = require('../utils/jobPayload');
  *     (the distributed lock: first write wins, everyone else gets a conflict).
  *  3. If nobody accepts before the wave times out, expand the radius and
  *     broadcast a new wave to freshly-in-range workers.
- *  4. If the max radius is reached with no acceptance, the request expires.
+ *  4. The whole search is capped at SEARCH_WINDOW_SECONDS (the customer's
+ *     1-minute timer). When it elapses — or the max radius runs out first — the
+ *     request expires and the customer may RETRY, which re-runs the search from
+ *     the initial radius as a new `attempt`.
+ *
+ * Waves vs. the window. These are two independent timers and it matters which
+ * one owns the outcome: waves decide how far we look and are free to change
+ * (more waves, different radius steps), while the window decides when the
+ * customer gets an answer. The window always wins — a wave dispatched with 10s
+ * left on the clock gets 10s, not a full WAVE_TIMEOUT_SECONDS, because the
+ * customer was promised a result in a minute.
+ *
+ * The customer's live view. Every state change here pushes a `request:*` event to
+ * the customer's socket room. That's the primary channel; the polling endpoint
+ * (GET the request) returns the identical serializer and is the fallback, so a
+ * customer app that never opens a socket still works — just less promptly.
  */
-
-// ── Config (env-overridable) ─────────────────────────────────
-const INITIAL_RADIUS_KM = Number(process.env.DISPATCH_INITIAL_RADIUS_KM || 3);
-const RADIUS_INCREMENT_KM = Number(process.env.DISPATCH_RADIUS_INCREMENT_KM || 3);
-const MAX_RADIUS_KM = Number(process.env.DISPATCH_MAX_RADIUS_KM || 15);
-const BATCH_SIZE = Number(process.env.DISPATCH_BATCH_SIZE || 10);
-const WAVE_TIMEOUT_SECONDS = Number(process.env.DISPATCH_WAVE_TIMEOUT_SECONDS || 30);
-const SWEEP_INTERVAL_SECONDS = Number(process.env.DISPATCH_SWEEP_INTERVAL_SECONDS || 5);
 
 // Eligibility filter for a worker to receive an offer for `category`/`subcategory`.
 // Handles both the new `expertise` model and legacy onboarding `work.cleaningTypes`.
@@ -105,9 +123,35 @@ async function findNearbyWorkers(request, radiusKm, excludeWorkerIds) {
   return results;
 }
 
+/**
+ * Push the current state of a request to the customer's app.
+ *
+ * Best-effort by design: a socket failure must never roll back or block a
+ * dispatch decision that has already been persisted, so this swallows its own
+ * errors. The customer's polling GET is the safety net.
+ *
+ * Required lazily to keep the require graph acyclic — utils/requestPayload pulls
+ * in paymentService, which pulls in the ServiceRequest model, and importing it at
+ * module scope here would tangle dispatch into that chain at load time.
+ */
+async function pushToCustomer(request, event, extra = {}) {
+  if (!request.user) return; // legacy unauthenticated request — nobody to notify
+  try {
+    const { customerView } = require('../utils/requestPayload');
+    emitter.emitToUser(request.user, event, { request: await customerView(request), ...extra });
+  } catch (err) {
+    console.error(`Customer push failed (${event}) for request ${request._id}:`, err.message);
+  }
+}
+
 // Broadcast one wave of offers. Returns the number of NEW workers offered.
 async function dispatchWave(request) {
-  const alreadyOffered = request.offers.map((o) => o.worker);
+  // Exclude only workers already offered THIS attempt. A retry is meant to reach
+  // the same neighbourhood again — the workers who ignored or missed the previous
+  // attempt are exactly the ones most likely to be free now, and excluding them
+  // made a retry in a thin-supply area a guaranteed second failure.
+  const attempt = request.attempt || 1;
+  const alreadyOffered = request.offers.filter((o) => (o.attempt || 1) === attempt).map((o) => o.worker);
   const workers = await findNearbyWorkers(request, request.radiusKm, alreadyOffered);
 
   const now = new Date();
@@ -116,6 +160,7 @@ async function dispatchWave(request) {
       worker: w._id,
       distanceKm: Math.round((w.distanceMeters / 1000) * 100) / 100,
       wave: request.wave,
+      attempt,
       status: 'offered',
       offeredAt: now,
     });
@@ -137,8 +182,21 @@ async function dispatchWave(request) {
   // bumped radiusKm/wave in memory, so the stale — already elapsed —
   // dispatchExpiresAt stayed in the DB and the sweeper re-picked the same
   // request every 5s indefinitely, re-running the geo query each time.
-  request.dispatchExpiresAt = new Date(now.getTime() + WAVE_TIMEOUT_SECONDS * 1000);
+  //
+  // Clamped to the attempt's own deadline: a wave must never outlive the search
+  // window the customer is watching count down. Without the clamp a wave
+  // dispatched at t=45s would hold the request in `searching` until t=75s — the
+  // customer's timer would hit zero while the server was still looking, and the
+  // "no one accepted, retry?" screen would be a lie for 15 seconds.
+  const waveEnd = new Date(now.getTime() + WAVE_TIMEOUT_SECONDS * 1000);
+  request.dispatchExpiresAt =
+    request.searchExpiresAt && request.searchExpiresAt < waveEnd ? request.searchExpiresAt : waveEnd;
   await request.save();
+
+  // Tell the customer how the search is going — new radius, how many
+  // professionals this wave reached — even on an empty wave, since "still
+  // looking, now 6 km out" is exactly what the waiting screen should say.
+  await pushToCustomer(request, 'request:searching', { newlyOffered: workers.length });
 
   if (!workers.length) return 0;
 
@@ -164,12 +222,92 @@ async function startDispatch(request) {
   request.maxRadiusKm = request.maxRadiusKm || MAX_RADIUS_KM;
   request.radiusKm = request.initialRadiusKm;
   request.wave = 1;
+  request.attempt = request.attempt || 1;
+  // Start the customer's clock here rather than at row creation, so a slow
+  // first geo query doesn't eat into the minute they were promised.
+  const startedAt = new Date();
+  request.searchStartedAt = startedAt;
+  request.searchExpiresAt = new Date(startedAt.getTime() + SEARCH_WINDOW_SECONDS * 1000);
   const offered = await dispatchWave(request);
   return offered;
 }
 
+/**
+ * Re-run the search on an expired request, as a new attempt.
+ *
+ * Implemented as a re-dispatch of the SAME row rather than a cloned request, so
+ * the customer app keeps one id across retries (its socket subscription, its
+ * open screen and its deep links all stay valid) and the price quoted at
+ * creation is carried forward instead of being re-derived from a rate card that
+ * may have moved in the meantime.
+ *
+ * The status flip is an atomic conditional update for the same reason accepting
+ * is: the sweeper may be expiring this row at the same moment, and two taps on
+ * "Retry" must not start two concurrent searches over one request. Only a row
+ * that is still `expired` AND still under the attempt cap can be claimed — so
+ * losers get a clean conflict instead of a duplicated dispatch.
+ *
+ * @returns {{ok:true, request, offered, attempt}} | {{ok:false, code, reason}}
+ */
+async function retryRequest(requestId) {
+  const now = new Date();
+  const claimed = await ServiceRequest.findOneAndUpdate(
+    { _id: requestId, status: 'expired', attempt: { $lt: MAX_ATTEMPTS } },
+    {
+      $set: {
+        status: 'searching',
+        searchStartedAt: now,
+        searchExpiresAt: new Date(now.getTime() + SEARCH_WINDOW_SECONDS * 1000),
+        dispatchExpiresAt: null,
+        expiredAt: null,
+      },
+      // `attempt` scopes which offers count as "already tried"; `wave` stays
+      // monotonic across attempts so it remains a stable ordering key on offers.
+      $inc: { attempt: 1, wave: 1 },
+    },
+    { new: true }
+  );
+
+  if (!claimed) {
+    // Distinguish the two ways the guard can fail — "try again" and "you're out
+    // of retries" need different words on the customer's screen.
+    const current = await ServiceRequest.findById(requestId);
+    if (!current) return { ok: false, code: 404, reason: 'Request not found' };
+    if (current.status !== 'expired') {
+      return {
+        ok: false,
+        code: 409,
+        reason: current.status === 'searching'
+          ? 'This request is already searching for a professional'
+          : `Cannot retry a ${current.status} request`,
+      };
+    }
+    return {
+      ok: false,
+      code: 429,
+      reason: `No professionals found after ${MAX_ATTEMPTS} attempts. Please raise a new request, or try a wider area.`,
+    };
+  }
+
+  // Fresh attempt, so search from the initial radius again — the point of a retry
+  // is a new sweep of the nearby supply, not a continuation of the far-out one.
+  claimed.radiusKm = claimed.initialRadiusKm || INITIAL_RADIUS_KM;
+  const offered = await dispatchWave(claimed);
+  return { ok: true, request: claimed, offered, attempt: claimed.attempt };
+}
+
 // Called by the sweeper when a wave has timed out with no acceptance.
 async function expandOrExpire(request) {
+  // The search window is the hard stop and it outranks the radius: once the
+  // customer's minute is up they get an answer, however much unexplored radius
+  // is left. (Checked first for that reason — the old code could only ever
+  // expire at MAX_RADIUS_KM, which with a 15 km ceiling meant a search ran
+  // ~2.5 minutes before the customer was told it had failed.)
+  const now = new Date();
+  if (request.searchExpiresAt && new Date(request.searchExpiresAt) <= now) {
+    return expire(request, 'search_window_elapsed');
+  }
+
   // Expand radius if we still have room.
   if (request.radiusKm < request.maxRadiusKm) {
     request.radiusKm = Math.min(request.radiusKm + RADIUS_INCREMENT_KM, request.maxRadiusKm);
@@ -177,14 +315,14 @@ async function expandOrExpire(request) {
     const offered = await dispatchWave(request);
     // Even if this wave found nobody new, keep searching until max radius is reached.
     if (offered === 0 && request.radiusKm >= request.maxRadiusKm) {
-      return expire(request);
+      return expire(request, 'max_radius_reached');
     }
     return { action: 'expanded', radiusKm: request.radiusKm, wave: request.wave, newlyOffered: offered };
   }
-  return expire(request);
+  return expire(request, 'max_radius_reached');
 }
 
-async function expire(request) {
+async function expire(request, reason = 'search_window_elapsed') {
   request.status = 'expired';
   request.expiredAt = new Date();
   const notify = [];
@@ -197,7 +335,10 @@ async function expire(request) {
   await request.save();
   // Real-time: clear the expired offer from any worker still showing it.
   notify.forEach((workerId) => emitter.emitToWorker(workerId, 'job:expired', { id: String(request._id) }));
-  return { action: 'expired' };
+  // Real-time: move the customer's screen to "no one available — retry?".
+  // `canRetry` on the payload says whether the button should be live.
+  await pushToCustomer(request, 'request:expired', { reason });
+  return { action: 'expired', reason };
 }
 
 /**
@@ -244,6 +385,11 @@ async function acceptRequest(requestId, worker) {
     }
   });
 
+  // Real-time: swap the customer's countdown for the assigned-professional card.
+  // The payload's `worker` block (name, phone, rating, distance) appears at this
+  // transition and not before — pre-accept there is nobody to show.
+  await pushToCustomer(updated, 'request:accepted');
+
   return { ok: true, request: updated };
 }
 
@@ -272,7 +418,15 @@ async function markWorkDone(requestId, worker) {
   }
   request.status = 'pending_rating';
   request.workDoneAt = new Date();
+  // Payment falls due the moment the work is physically done — deliberately not
+  // at `completed`, which additionally requires the worker to submit their own
+  // rating. Gating the customer's ability to pay on a tap only the worker can
+  // make would strand the money for a reason the customer can't see or fix.
+  paymentService.markDue(request);
   await request.save();
+
+  // Real-time: this is the customer's cue to show "work done — pay ₹X".
+  await pushToCustomer(request, 'request:work_done');
   return { ok: true, request };
 }
 
@@ -309,6 +463,12 @@ async function rateJob(requestId, worker, rating) {
   worker.jobsCompleted = (worker.jobsCompleted || 0) + 1;
   await worker.save();
 
+  // Real-time: the customer's job card moves to "completed". Payment may already
+  // have been made (it fell due back at pending_rating) or may still be open —
+  // `payment.payable` on the payload is what decides whether to keep the Pay
+  // button on screen.
+  await pushToCustomer(request, 'request:completed');
+
   return { ok: true, request };
 }
 
@@ -323,13 +483,39 @@ async function cancelRequest(requestId) {
     return { ok: false, code: 409, reason: `Request already ${request.status}` };
   }
   const assignedWorkerId = request.acceptedBy;
+  const stillOffered = request.offers.filter((o) => o.status === 'offered').map((o) => o.worker);
   request.status = 'cancelled';
   request.cancelledAt = new Date();
+  // Nothing was owed — the work never finished. (No cancellation fee exists yet;
+  // if one is introduced it belongs here, as a `due` payment with its own amount.)
+  request.offers.forEach((o) => {
+    if (o.status === 'offered') o.status = 'missed';
+  });
   await request.save();
 
   if (assignedWorkerId) {
     await Worker.updateOne({ _id: assignedWorkerId, activeRequest: request._id }, { $set: { activeRequest: null } });
   }
+
+  // Real-time: pull the offer off the screen of every worker still weighing it.
+  // Reuses `job:expired` rather than introducing a `job:cancelled` event, because
+  // the worker app already handles that event and the meaning is identical from
+  // their side — this job is gone, stop showing it. A new event would have meant a
+  // worker-app change for no behavioural gain.
+  //
+  // Before this, cancelling a `searching` request left its offers sitting at
+  // `offered` with nothing pushed, so the job stayed on every notified worker's
+  // screen until their app happened to refetch GET /api/jobs/available (which
+  // filters on status `searching` and would then drop it).
+  //
+  // The ASSIGNED worker is deliberately NOT sent this: `job:expired` means "an
+  // offer vanished", and an accepted job disappearing is a different event their
+  // app has no handler for. They see the cancellation on their next
+  // GET /api/jobs/mine, exactly as before. Pushing it properly needs a
+  // worker-side event and screen, which is out of scope here.
+  stillOffered.forEach((workerId) => emitter.emitToWorker(workerId, 'job:expired', { id: String(request._id) }));
+
+  await pushToCustomer(request, 'request:cancelled');
   return { ok: true, request };
 }
 
@@ -348,6 +534,13 @@ async function sweepOnce() {
     // floor keeps it off requests still mid-creation — there is a brief window
     // between createRequest's save and the first wave's save.
     // ({ field: null } matches both an explicit null and a missing field.)
+    //
+    // The third clause is the guarantee behind the customer's timer: a request
+    // whose search window has elapsed is picked up even if its wave timer somehow
+    // hasn't fired, so `searching` can never outlive `searchExpiresAt` by more
+    // than one sweep interval. Since dispatchWave clamps every wave to the window
+    // this is belt-and-braces, but the promise it backs — a definite answer within
+    // the minute — is the one the whole retry flow rests on.
     const now = new Date();
     const due = await ServiceRequest.find({
       status: 'searching',
@@ -357,6 +550,7 @@ async function sweepOnce() {
           dispatchExpiresAt: null,
           createdAt: { $lte: new Date(now.getTime() - WAVE_TIMEOUT_SECONDS * 1000) },
         },
+        { searchExpiresAt: { $lte: now } },
       ],
     }).limit(50);
 
@@ -377,7 +571,11 @@ async function sweepOnce() {
 function startSweeper() {
   if (sweeperTimer) return;
   sweeperTimer = setInterval(sweepOnce, SWEEP_INTERVAL_SECONDS * 1000);
-  console.log(`🛰️  Dispatch sweeper running every ${SWEEP_INTERVAL_SECONDS}s (radius ${INITIAL_RADIUS_KM}→${MAX_RADIUS_KM}km, wave timeout ${WAVE_TIMEOUT_SECONDS}s)`);
+  console.log(
+    `🛰️  Dispatch sweeper running every ${SWEEP_INTERVAL_SECONDS}s ` +
+      `(radius ${INITIAL_RADIUS_KM}→${MAX_RADIUS_KM}km, wave timeout ${WAVE_TIMEOUT_SECONDS}s, ` +
+      `search window ${SEARCH_WINDOW_SECONDS}s, up to ${MAX_ATTEMPTS} attempts)`
+  );
 }
 
 function stopSweeper() {
@@ -387,6 +585,7 @@ function stopSweeper() {
 
 module.exports = {
   startDispatch,
+  retryRequest,
   acceptRequest,
   declineRequest,
   markWorkDone,
@@ -398,6 +597,7 @@ module.exports = {
   sweepOnce,
   config: {
     INITIAL_RADIUS_KM, RADIUS_INCREMENT_KM, MAX_RADIUS_KM,
-    BATCH_SIZE, WAVE_TIMEOUT_SECONDS, SWEEP_INTERVAL_SECONDS,
+    BATCH_SIZE, WAVE_TIMEOUT_SECONDS, SEARCH_WINDOW_SECONDS,
+    SWEEP_INTERVAL_SECONDS, MAX_ATTEMPTS,
   },
 };

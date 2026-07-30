@@ -317,10 +317,12 @@ token is the whole session.
 - **Logout** is purely local: delete the token. There is no server-side logout or
   token blacklist.
 - **Never send a user token to a worker endpoint** (`/api/auth/*`, `/api/jobs/*`,
-  `/api/profile/*`) or to the Socket.IO channel. Both token families are signed
-  with the same secret and are told apart by a `type` claim, so the server rejects
-  the crossover explicitly — but keep them in separate storage keys so it can't
-  happen by accident.
+  `/api/profile/*`). Both token families are signed with the same secret and are
+  told apart by a `type` claim, so the server rejects the crossover explicitly —
+  but keep them in separate storage keys so it can't happen by accident.
+- The **Socket.IO channel accepts both** token types and routes each to its own
+  audience: a user token gets the customer's read-only `request:*` stream, a worker
+  token gets the job-offer stream. Neither can reach the other's events.
 
 ---
 
@@ -335,7 +337,8 @@ interchangeable.
 | Creates | a `User` record | a `Worker` record |
 | Token claim | `type: 'user'` | *(none)* |
 | Profile | `/api/user/profile` | `/api/profile` |
-| Sockets | not available | required |
+| Bookings | `/api/user/service-requests` | `/api/jobs/*` |
+| Sockets | optional — read-only `request:*` updates | required — job offers |
 
 **Calling `/api/auth/send-otp` + `verify-otp` from the customer app creates a
 Worker record** for that phone number and drops it into the worker onboarding
@@ -432,12 +435,13 @@ export async function bootstrap() {
 - **Any profile field beyond the name** — no email, address, gender, DOB, photo.
 - **Delete account / clear name.**
 - **Social or password login.** OTP only.
-- **Bookings linked to the account.** `POST /api/service-requests` still takes
-  `customerName` + `customerPhone` in the body and does **not** read the user
-  token, so a booking is not yet attached to the `User` record. Until that's
-  wired, the app should fill those two fields from the logged-in profile
-  (`profile.fullName`, `profile.phone`) so the data lines up, and keep tracking
-  requests by the `id` returned at creation.
+> **Bookings ARE now linked to the account** — this section previously said they
+> weren't. Use `POST /api/user/service-requests`, which reads the customer's name
+> and phone from the token and attaches the request to the `User` record. See
+> **USER_SERVICE_BOOKING_INTEGRATION_GUIDE.md** for the whole booking → dispatch →
+> payment flow. The old `POST /api/service-requests` (with `customerName` /
+> `customerPhone` in the body) still exists for test scripts but leaves the request
+> ownerless — the app must not use it.
 
 ---
 
