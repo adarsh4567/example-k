@@ -25,6 +25,8 @@ const assessmentPartnerRoutes = require('./src/routes/assessmentPartnerRoutes');
 const userAuthRoutes = require('./src/routes/userAuthRoutes');
 const userProfileRoutes = require('./src/routes/userProfileRoutes');
 const userServiceRequestRoutes = require('./src/routes/userServiceRequestRoutes');
+const userTrialRoutes = require('./src/routes/userTrialRoutes');
+const userWalletRoutes = require('./src/routes/userWalletRoutes');
 const catalogRoutes = require('./src/routes/catalogRoutes');
 const dispatchService = require('./src/services/dispatchService');
 const videoJobsService = require('./src/services/videoJobsService');
@@ -80,6 +82,9 @@ app.use('/api/services', catalogRoutes);
 app.use('/api/user/auth', userAuthRoutes);
 app.use('/api/user/profile', userProfileRoutes);
 app.use('/api/user/service-requests', userServiceRequestRoutes);
+// Discounted trial bookings (cleaning only) + the reward wallet they credit.
+app.use('/api/user/trials', userTrialRoutes);
+app.use('/api/user/wallet', userWalletRoutes);
 
 // 404 + error handling
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));

@@ -2,20 +2,19 @@ const TrialJob = require('../models/TrialJob');
 const Worker = require('../models/Worker');
 const { ok, fail } = require('../utils/response');
 const tokenService = require('../services/trialTokenService');
-const { decide, outcomeStatusFor } = require('../services/trialDecisionService');
-const { transitionWorker } = require('../services/workerStatusService');
-const { settleApprovedTrial } = require('../services/trialSettlementService');
-const { notifyWorker } = require('../services/notificationService');
-const { TRIAL_QUESTIONS, isValidAnswer } = require('../config/trialQuestions');
+const feedbackService = require('../services/trialFeedbackService');
 
-// Public shape of the questions (drops internal flags like positive/hardFail).
-const PUBLIC_QUESTIONS = TRIAL_QUESTIONS.map((q) => ({
-  key: q.key,
-  prompt: q.prompt,
-  type: q.type,
-  optional: !!q.optional,
-  options: (q.options || []).map((o) => ({ value: o.value, label: o.label })),
-}));
+/**
+ * The PUBLIC (tokenised) trial feedback form.
+ *
+ * Used for admin-assigned trials, where the host is not a Kaaryo account holder —
+ * access is gated by a signed single-use link rather than a session.
+ *
+ * A customer who booked their own trial in the app submits the same form through
+ * userTrialController instead, authenticated by their token. Both routes run the
+ * identical validation → decision → onboarding path in trialFeedbackService, so
+ * the outcome cannot differ between them.
+ */
 
 // Resolve a token → live, feedback-open trial job. Returns the job or null
 // (having already written the failure response).
@@ -30,12 +29,9 @@ async function resolveOpenJob(token, res) {
     fail(res, 'Trial job not found', 404);
     return null;
   }
-  if (job.feedback && job.feedback.submittedAt) {
-    fail(res, 'Feedback has already been submitted for this trial', 409);
-    return null;
-  }
-  if (job.status !== 'completed') {
-    fail(res, 'This trial is not yet ready for feedback', 409);
+  const open = feedbackService.checkFeedbackOpen(job);
+  if (!open.ok) {
+    fail(res, open.reason, open.code);
     return null;
   }
   return job;
@@ -58,7 +54,7 @@ async function getForm(req, res, next) {
           subcategory: job.subcategory,
           completedAt: job.completedAt,
         },
-        questions: PUBLIC_QUESTIONS,
+        questions: feedbackService.PUBLIC_QUESTIONS,
       },
       'Trial feedback form'
     );
@@ -75,55 +71,14 @@ async function submitFeedback(req, res, next) {
     if (!job) return;
 
     const raw = (req.body && req.body.answers) || req.body || {};
+    const parsed = feedbackService.validateAnswers(raw);
+    if (!parsed.ok) return fail(res, parsed.reason, 422);
 
-    // Validate every non-optional question is answered with an allowed value.
-    const answers = {};
-    for (const q of TRIAL_QUESTIONS) {
-      const val = raw[q.key];
-      if (val === undefined || val === null || val === '') {
-        if (q.optional) continue;
-        return fail(res, `Missing answer for ${q.key}: "${q.prompt}"`, 422);
-      }
-      if (!isValidAnswer(q.key, val)) {
-        return fail(res, `Invalid answer "${val}" for ${q.key}`, 422);
-      }
-      answers[q.key] = String(val);
-    }
-
-    const verdict = decide(answers);
-
-    job.feedback.answers = answers;
-    job.feedback.decision = verdict;
-    job.feedback.submittedVia = 'sms_link';
-    job.feedback.submittedAt = new Date();
-    await job.save();
-
-    // Auto-finalise strong_pass / fail; conditional waits for an admin.
-    const targetStatus = outcomeStatusFor(verdict);
-    if (targetStatus) {
-      const worker = await Worker.findById(job.worker);
-      if (worker && worker.status === 'trial_completed') {
-        await transitionWorker(worker, targetStatus, {
-          reason: `Trial decision engine: ${verdict}`,
-          trialJob: job._id,
-        });
-        // On approval, credit the trial into the dashboard (wallet + jobs done + history).
-        if (targetStatus === 'approved') {
-          await settleApprovedTrial(job, worker).catch((e) => console.error('[trial] settlement failed:', e.message));
-        }
-        await notifyWorker(worker, {
-          title: targetStatus === 'approved' ? "You're approved! 🎉" : 'Trial review update',
-          message:
-            targetStatus === 'approved'
-              ? 'Your trial passed. You can now start accepting jobs on Kaaryo.'
-              : 'Thank you for completing your trial. Unfortunately it was not approved this time.',
-        }).catch(() => {});
-      }
-    }
+    const result = await feedbackService.recordFeedback(job, parsed.answers, 'sms_link');
 
     return ok(
       res,
-      { decision: verdict, autoFinalized: !!targetStatus },
+      { decision: result.decision, autoFinalized: result.autoFinalized },
       'Thank you — your feedback has been recorded'
     );
   } catch (err) {

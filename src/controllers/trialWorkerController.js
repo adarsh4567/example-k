@@ -4,6 +4,17 @@ const { transitionWorker } = require('../services/workerStatusService');
 const { trialWorkerView } = require('../utils/trialPayload');
 const { FEEDBACK_SLA_MINUTES } = require('../config/trialConfig');
 const trialJobs = require('../services/trialJobsService');
+const userTrial = require('../services/userTrialService');
+
+/**
+ * Worker-facing trial endpoints.
+ *
+ * Every response shape here is unchanged by the customer-booking feature. A
+ * customer-booked trial reaches this controller looking exactly like an
+ * admin-assigned one, so the worker app needs no changes; the only additions are
+ * side effects AFTER the response payload is decided — pushing the customer's
+ * screen forward, and rolling a declined offer to the next candidate.
+ */
 
 // Statuses that count as the worker's "current" trial job (still in flight).
 const LIVE_STATUSES = ['assigned', 'accepted', 'in_progress', 'completed'];
@@ -69,9 +80,18 @@ async function acceptTrial(req, res, next) {
 
     job.status = 'accepted';
     job.acceptedAt = new Date();
+    // Close out the candidate queue: this worker took it, so the search is over
+    // and no further offer may roll. (No-op for an admin assignment.)
+    const candidate = job.candidates[job.candidateIndex];
+    if (candidate) candidate.status = 'accepted';
+    job.searchExpiresAt = null;
     await job.save();
 
     await transitionWorker(req.worker, 'trial_accepted', { reason: 'Worker accepted trial job', trialJob: job._id });
+
+    // Real-time: swap the customer's "finding a professional" screen for the
+    // assigned-professional card.
+    await userTrial.pushToCustomer(job, 'trial:accepted').catch(() => {});
 
     return ok(res, { trialJob: trialWorkerView(job) }, 'Trial job accepted');
   } catch (err) {
@@ -93,6 +113,12 @@ async function declineTrial(req, res, next) {
     job.declinedAt = new Date();
     await job.save();
 
+    // Snapshot the response BEFORE any candidate roll. On a customer-booked trial
+    // the roll below reassigns `job.worker` and puts the status back to
+    // 'assigned' — serialising after that would hand this worker a payload about
+    // somebody else's offer. What they declined is what they get told.
+    const view = trialWorkerView(job);
+
     // Back into the queue — but log it as a seriousness signal for ops (a
     // decline on a trial job is itself meaningful; repeated declines are visible
     // in the WorkerStatusTransition audit).
@@ -101,7 +127,15 @@ async function declineTrial(req, res, next) {
       trialJob: job._id,
     });
 
-    return ok(res, { trialJob: trialWorkerView(job) }, 'Trial job declined — back in the queue');
+    // Customer-booked: pass the offer to the next nearest candidate instead of
+    // ending the booking. The customer is waiting on a trial, not on this worker.
+    if (job.source === 'user' && job.candidates.length) {
+      await userTrial.rollToNextCandidate(job, 'worker_declined').catch((err) =>
+        console.error(`[trial] candidate roll failed for job ${job._id}:`, err.message)
+      );
+    }
+
+    return ok(res, { trialJob: view }, 'Trial job declined — back in the queue');
   } catch (err) {
     next(err);
   }
@@ -121,6 +155,8 @@ async function startTrial(req, res, next) {
     await job.save();
 
     await transitionWorker(req.worker, 'trial_in_progress', { reason: 'Worker started trial job', trialJob: job._id });
+
+    await userTrial.pushToCustomer(job, 'trial:started').catch(() => {});
 
     return ok(res, { trialJob: trialWorkerView(job) }, 'Trial job started');
   } catch (err) {

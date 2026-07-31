@@ -13,22 +13,51 @@ const PLATFORM_COMMISSION_PERCENT = Number(process.env.PLATFORM_COMMISSION_PERCE
 const CURRENCY = 'INR';
 const DEFAULT_PRICE = Number(process.env.CATEGORY_PRICE_DEFAULT || 300);
 
-// ── Trial ("free trial for users") pricing ──────────────────────────────────
-// A trial has its own base price per work (flat default 100; override a single
-// category with TRIAL_BASE_PRICE_<CATEGORY>). Economics of the promo:
-//   • user SEES & PAYS a discounted fraction of the base (TRIAL_USER_PRICE_PERCENT),
-//   • the WORKER keeps the FULL user price — no platform commission on a trial,
-//   • the platform credits a % of the worker's earning to the USER's wallet
-//     (TRIAL_WALLET_CASHBACK_PERCENT) as a signup reward.
-// Example (defaults): base 100 → user pays 60 → worker earns 60 → user wallet +30.
-const TRIAL_BASE_PRICE = Number(process.env.TRIAL_BASE_PRICE || 100);
+// ── Trial ("discounted trial job") pricing ──────────────────────────────────
+// A trial is a deliberate loss-leader: it gets a trainee worker through their
+// onboarding trial while giving a customer a cheap first job. Three numbers:
+//
+//   basePrice   what the work is nominally worth — shown struck through (110)
+//   userPrice   what the customer actually pays  — an ABSOLUTE amount (100)
+//   reward      credited back to the customer's wallet, % of userPrice (40% → 40)
+//
+// and one rule: the WORKER KEEPS THE FULL userPrice. No platform commission on a
+// trial. So the platform collects 100, pays the worker 100 and hands 40 back as a
+// reward — a net ₹40 cost per trial, which is the customer-acquisition spend.
+//
+// `userPrice` is configured as an absolute amount, not a percentage of the base,
+// because the two are set independently by the business: 110 → 100 is not a round
+// percentage (it's 9.09%), and quoting a price derived from a rounded percentage
+// would make the displayed "you save ₹X" disagree with the amount charged.
+// TRIAL_USER_PRICE_PERCENT is still honoured as a fallback when no absolute price
+// is configured, so older .env files keep working.
+const TRIAL_BASE_PRICE = Number(process.env.TRIAL_BASE_PRICE || 110);
+const TRIAL_USER_PRICE = process.env.TRIAL_USER_PRICE;
 const TRIAL_USER_PRICE_PERCENT = Number(process.env.TRIAL_USER_PRICE_PERCENT || 60);
-const TRIAL_WALLET_CASHBACK_PERCENT = Number(process.env.TRIAL_WALLET_CASHBACK_PERCENT || 50);
+const TRIAL_REWARD_PERCENT = Number(
+  // TRIAL_WALLET_CASHBACK_PERCENT is the pre-rename name; still read so an
+  // existing .env doesn't silently change the reward to the new default.
+  process.env.TRIAL_REWARD_PERCENT || process.env.TRIAL_WALLET_CASHBACK_PERCENT || 40
+);
+
+// Per-category override, falling back to the flat default. Same lookup shape as
+// the regular rate card's CATEGORY_PRICE_<CATEGORY>.
+function envNumberFor(prefix, category, fallback) {
+  const raw = process.env[`${prefix}_${String(category).toUpperCase()}`];
+  const n = Number(raw);
+  return raw !== undefined && raw !== '' && !Number.isNaN(n) ? n : fallback;
+}
 
 function trialBasePriceFor(category) {
-  const raw = process.env[`TRIAL_BASE_PRICE_${String(category).toUpperCase()}`];
-  const n = Number(raw);
-  return raw !== undefined && raw !== '' && !Number.isNaN(n) ? n : TRIAL_BASE_PRICE;
+  return envNumberFor('TRIAL_BASE_PRICE', category, TRIAL_BASE_PRICE);
+}
+
+function trialUserPriceFor(category, basePrice) {
+  const absolute = envNumberFor('TRIAL_USER_PRICE', category, TRIAL_USER_PRICE);
+  const n = Number(absolute);
+  if (absolute !== undefined && absolute !== '' && !Number.isNaN(n)) return n;
+  // No absolute price configured — fall back to the legacy percentage.
+  return Math.round(basePrice * (TRIAL_USER_PRICE_PERCENT / 100));
 }
 
 // Hardcoded fallbacks — used only when the matching .env var is unset/invalid,
@@ -73,25 +102,39 @@ function computePriceBreakdown(category) {
   };
 }
 
-// Trial "free trial for users" pricing (see the config block above).
-// worker keeps the full discounted user price; the user-wallet cashback is
-// carried on the breakdown for the user-side (admin panel) to apply.
+/**
+ * Trial pricing (see the config block above).
+ *
+ * With the defaults, for cleaning:
+ *   basePrice 110 → userPrice 100 (saves ₹10) → worker earns 100 → reward 40
+ *
+ * `userReward`/`userRewardPercent` are the current names; `userWalletCredit`/
+ * `userWalletCreditPercent` are kept as aliases carrying the identical value,
+ * because the admin panel and the TrialJob.pricing schema already read those and
+ * renaming a persisted field buys nothing.
+ */
 function computeTrialPrice(category) {
   const basePrice = trialBasePriceFor(category);
-  const userPrice = Math.round(basePrice * (TRIAL_USER_PRICE_PERCENT / 100));
+  const userPrice = trialUserPriceFor(category, basePrice);
   const workerEarning = userPrice; // worker keeps 100% of what the user pays
-  const userWalletCredit = Math.round(workerEarning * (TRIAL_WALLET_CASHBACK_PERCENT / 100));
+  const userReward = Math.round(userPrice * (TRIAL_REWARD_PERCENT / 100));
+  const userSavings = Math.max(0, basePrice - userPrice);
+
   return {
     currency: CURRENCY,
-    basePrice,                                            // e.g. 100
-    userPrice,                                            // e.g. 60 — user sees & pays this
-    totalPrice: userPrice,                                // alias → ServiceRequest.pricing.totalPrice
-    userDiscountPercent: 100 - TRIAL_USER_PRICE_PERCENT,  // e.g. 40
-    platformFeePercent: 0,                                // no commission on a trial
+    basePrice,                              // 110 — shown struck through
+    userPrice,                              // 100 — user sees & pays this
+    totalPrice: userPrice,                  // alias → ServiceRequest.pricing.totalPrice
+    userSavings,                            // 10
+    userDiscountPercent: basePrice > 0 ? Math.round((userSavings / basePrice) * 100) : 0, // 9
+    platformFeePercent: 0,                  // no commission on a trial
     platformFee: 0,
-    workerEarning,                                        // e.g. 60 (full)
-    userWalletCreditPercent: TRIAL_WALLET_CASHBACK_PERCENT, // e.g. 50
-    userWalletCredit,                                     // e.g. 30 — credited to USER wallet (user side)
+    workerEarning,                          // 100 — the FULL user price
+    userRewardPercent: TRIAL_REWARD_PERCENT, // 40
+    userReward,                             // 40 — credited to the user's wallet
+    // Aliases (admin panel + TrialJob.pricing schema) — same numbers.
+    userWalletCreditPercent: TRIAL_REWARD_PERCENT,
+    userWalletCredit: userReward,
   };
 }
 
@@ -101,7 +144,7 @@ module.exports = {
   PLATFORM_COMMISSION_PERCENT,
   TRIAL_BASE_PRICE,
   TRIAL_USER_PRICE_PERCENT,
-  TRIAL_WALLET_CASHBACK_PERCENT,
+  TRIAL_REWARD_PERCENT,
   CATEGORY_BASE_PRICE,
   DUMMY_CUSTOMER_RATING,
   CURRENCY,

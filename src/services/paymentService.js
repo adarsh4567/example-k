@@ -1,21 +1,15 @@
-const crypto = require('crypto');
 const ServiceRequest = require('../models/ServiceRequest');
 const WalletTransaction = require('../models/WalletTransaction');
+const gateway = require('./paymentGateway');
 const { CURRENCY } = require('./pricingService');
 
 /**
  * Customer payment for a finished job, and the worker credit it funds.
  *
- * MOCK (default): no gateway. `initiate` mints an order id and `confirm`
- *       captures it unconditionally — so the whole flow is testable end to end
- *       from a REST client. Set PAYMENT_FORCE_FAIL=1 to make every capture
- *       decline instead, which is how you exercise the retry path.
- * REAL: set PAYMENT_MODE=real and fill in the two marked blocks (create order /
- *       verify signature). Nothing else in the codebase needs to change — the
- *       state machine, idempotency and ledger writes are provider-agnostic.
- *
- * Same MODE-switch shape as smsService and payoutService, so wiring a provider
- * later is a local change no caller has to know about.
+ * The gateway itself lives in paymentGateway (mock by default, PAYMENT_MODE=real
+ * to wire a provider) and is shared with the trial-job payment flow. This module
+ * owns the ServiceRequest side: the state machine, idempotency, and the worker
+ * ledger write that a capture funds.
  *
  * ── The state machine ───────────────────────────────────────────
  *   not_due ──(worker marks work done)──▶ due
@@ -37,9 +31,7 @@ const { CURRENCY } = require('./pricingService');
  *   creditWorker() is idempotent for exactly that reason and can be re-run.
  */
 
-const MODE = process.env.PAYMENT_MODE || 'mock';
-const FORCE_FAIL = process.env.PAYMENT_FORCE_FAIL === '1';
-const PROVIDER = MODE === 'real' ? process.env.PAYMENT_PROVIDER || 'gateway' : 'mock';
+const MODE = gateway.MODE;
 
 // Methods the customer app may send. `cash` is settled in the same two calls as
 // the online methods (initiate → confirm) rather than getting its own shortcut,
@@ -53,10 +45,6 @@ const METHODS = ServiceRequest.PAYMENT_METHODS;
 const PAYABLE_JOB_STATUS = ['pending_rating', 'completed'];
 
 const isPayableStatus = (status) => PAYABLE_JOB_STATUS.includes(status);
-
-function newId(prefix) {
-  return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(5).toString('hex')}`;
-}
 
 /**
  * Mark payment due. Called when the worker marks the on-site work done, and
@@ -72,36 +60,6 @@ function markDue(request) {
   request.payment.currency = (request.pricing && request.pricing.currency) || CURRENCY;
   request.payment.dueAt = new Date();
   return request.payment;
-}
-
-// ── Provider seam ────────────────────────────────────────────────
-
-async function createProviderOrder({ amount, currency, method, requestId }) {
-  if (MODE === 'real') {
-    // ── REAL INTEGRATION #1 ────────────────────────────────────
-    // e.g. const order = await razorpay.orders.create({ amount: amount * 100, currency, receipt: requestId })
-    //      return { orderId: order.id, provider: 'razorpay' };
-    throw new Error('PAYMENT_MODE=real but no provider implemented in paymentService.js');
-  }
-  const orderId = newId('order');
-  console.log(`💳 [MOCK PAY] order ${orderId} · ₹${amount} ${currency} · ${method} · request ${requestId}`);
-  return { orderId, provider: PROVIDER };
-}
-
-async function captureProviderPayment({ orderId, gatewayReference, amount }) {
-  if (MODE === 'real') {
-    // ── REAL INTEGRATION #2 ────────────────────────────────────
-    // Verify the gateway signature the client handed back, then read the
-    // authoritative amount/status off the provider rather than trusting the
-    // client's numbers.
-    throw new Error('PAYMENT_MODE=real but no provider implemented in paymentService.js');
-  }
-  if (FORCE_FAIL) {
-    return { captured: false, reason: 'Payment declined by bank (PAYMENT_FORCE_FAIL=1)' };
-  }
-  const transactionId = gatewayReference || newId('pay');
-  console.log(`💳 [MOCK PAY] captured ₹${amount} · order ${orderId} · txn ${transactionId}`);
-  return { captured: true, transactionId, provider: PROVIDER };
 }
 
 // ── Step 1: open a payment ───────────────────────────────────────
@@ -138,11 +96,12 @@ async function initiatePayment(request, { method }) {
   if (!amount) return { ok: false, code: 409, reason: 'This request has no priced amount to pay' };
 
   const currency = (request.pricing && request.pricing.currency) || CURRENCY;
-  const order = await createProviderOrder({
+  const order = await gateway.createOrder({
     amount,
     currency,
     method,
-    requestId: String(request._id),
+    reference: String(request._id),
+    label: 'request',
   });
 
   request.payment.status = 'processing';
@@ -193,7 +152,7 @@ async function confirmPayment(request, { orderId, gatewayReference } = {}) {
     return { ok: false, code: 409, reason: 'orderId does not match the payment in progress' };
   }
 
-  const result = await captureProviderPayment({
+  const result = await gateway.capture({
     orderId: payment.orderId,
     gatewayReference,
     amount: payment.amount,

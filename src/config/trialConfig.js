@@ -25,4 +25,34 @@ module.exports = {
 
   // Base URL used to build the public feedback link that is SMS'd to the host.
   PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 5000}`,
+
+  // ── Customer-app trial booking ───────────────────────────────────────────
+  // A customer can book a discounted trial job themselves, which finds a worker
+  // waiting for their onboarding trial. Independent of TRIAL_ENABLED so the
+  // customer-facing offer can be pulled without disabling the admin pipeline.
+  USER_TRIAL_ENABLED: process.env.USER_TRIAL_ENABLED !== 'false',
+
+  // Trials are CLEANING ONLY. Electricians don't do a trial job at all — they go
+  // through the in-person shop assessment (Filter 3), which is why they never
+  // reach `pending_trial`. Other trades (plumbing, carpentry…) do reach it, but
+  // the customer-facing trial offer is deliberately scoped to cleaning: it's the
+  // one trade with enough trial supply to make the promo dependable.
+  USER_TRIAL_CATEGORY: process.env.USER_TRIAL_CATEGORY || 'cleaning',
+
+  // How many `pending_trial` workers one booking may be offered to, in order of
+  // distance. The offer goes to ONE worker at a time — a trial is a directed job,
+  // not a broadcast — and rolls to the next candidate when one declines or lets
+  // the countdown lapse. Worst-case search time is
+  // MAX_CANDIDATES × OFFER_WINDOW_SECONDS (3 × 90s = 4.5 min by default).
+  USER_TRIAL_MAX_CANDIDATES: Number(process.env.USER_TRIAL_MAX_CANDIDATES) || 3,
+
+  // Outer bound for the candidate geo query, km. A candidate must ALSO be within
+  // their own declared travel radius of the customer (see userTrialService).
+  USER_TRIAL_SEARCH_RADIUS_KM: Number(process.env.USER_TRIAL_SEARCH_RADIUS_KM) || 15,
+
+  // Lifetime cap on discounted trials per customer account. The promo runs at a
+  // deliberate loss (₹40 reward per trial with default pricing), so it is capped
+  // at one by default. Raising this is purely a config change — the flow itself
+  // has no single-use assumption baked in.
+  USER_TRIAL_MAX_PER_USER: Number(process.env.USER_TRIAL_MAX_PER_USER) || 1,
 };

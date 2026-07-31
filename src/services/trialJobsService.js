@@ -23,12 +23,49 @@ const {
   FEEDBACK_OVERDUE_HOURS,
 } = require('../config/trialConfig');
 
-// Mint a fresh single-use link and "send" it to the trial host (mock SMS logs
-// to console in dev). Returns the link so callers can surface it for demos.
+/**
+ * Ask the trial host to rate the job. Called once when the worker completes, and
+ * again by the SLA reminder below.
+ *
+ * Two shapes, depending on who the host is:
+ *
+ *   ADMIN-assigned — the host has no Kaaryo account, so they get a signed
+ *   single-use link by SMS. Unchanged.
+ *
+ *   CUSTOMER-booked — the host IS a logged-in account with the form built into
+ *   the app, so no token link is minted. Issuing a bearer-ish URL to someone who
+ *   already has a session would be a second, weaker credential for no gain. They
+ *   get a socket push plus a plain SMS nudge pointing at the app.
+ *
+ * This is also where a customer-booked trial's payment falls due — the one place
+ * that already means "the trial job is finished", so the worker's completion
+ * endpoint needed no change.
+ *
+ * Returns the link (admin path) or null (customer path).
+ */
 async function sendFeedbackRequest(job, { reminder = false } = {}) {
+  const prefix = reminder ? 'Reminder: please' : 'Please';
+
+  if (job.source === 'user' && job.requestedBy) {
+    const userTrial = require('./userTrialService');
+
+    // Payment becomes collectable now — the work is physically done. Idempotent,
+    // so the SLA reminder re-entering here can't reset a payment in flight.
+    if (userTrial.markPaymentDue(job)) await job.save();
+
+    await userTrial
+      .pushToCustomer(job, 'trial:feedback_requested', { reminder })
+      .catch(() => {});
+    await sendTransactionalSms(
+      job.host.phone,
+      `${prefix} rate your Kaaryo trial service in the app — it takes 1 minute.`
+    ).catch(() => {});
+    console.log(`🔗 [trial-feedback] in-app form requested for job ${job._id} (user ${job.requestedBy})`);
+    return null;
+  }
+
   const token = tokenService.sign(job._id);
   const link = tokenService.buildLink(token);
-  const prefix = reminder ? 'Reminder: please' : 'Please';
   await sendTransactionalSms(
     job.host.phone,
     `${prefix} rate your Kaaryo trial service. It takes 1 minute: ${link}`
@@ -38,6 +75,14 @@ async function sendFeedbackRequest(job, { reminder = false } = {}) {
 }
 
 // ── 1. Offer expiry ─────────────────────────────────────────────────────────
+//
+// For an ADMIN-assigned trial this is terminal: the job expires and the worker
+// goes back in the queue for ops to reassign.
+//
+// For a CUSTOMER-booked trial the offer instead ROLLS to the next candidate — the
+// customer is waiting on a booking, not on one particular worker, so a single
+// unresponsive candidate must not kill it. The job only becomes terminal once the
+// whole queue is spent (handled inside rollToNextCandidate).
 async function expireStaleOffers() {
   const due = await TrialJob.find({
     status: 'assigned',
@@ -46,11 +91,7 @@ async function expireStaleOffers() {
 
   for (const job of due) {
     try {
-      job.status = 'expired';
-      job.declinedReason = 'timeout';
-      job.declinedAt = new Date();
-      await job.save();
-
+      // Release the worker who let it lapse first, whichever path follows.
       const worker = await Worker.findById(job.worker);
       if (worker && worker.status === 'trial_assigned') {
         await transitionWorker(worker, 'pending_trial', {
@@ -62,6 +103,17 @@ async function expireStaleOffers() {
           message: 'Your trial job offer timed out. You are back in the queue for a new one.',
         }).catch(() => {});
       }
+
+      if (job.source === 'user' && job.candidates.length) {
+        // Reassigns `worker` + restarts the countdown, or ends the search.
+        await require('./userTrialService').rollToNextCandidate(job, 'timeout');
+        continue;
+      }
+
+      job.status = 'expired';
+      job.declinedReason = 'timeout';
+      job.declinedAt = new Date();
+      await job.save();
     } catch (err) {
       console.error(`[trial-sweep] expire failed for job ${job._id}:`, err.message);
     }

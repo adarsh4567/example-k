@@ -11,6 +11,12 @@ All bodies and responses are `application/json`. CORS is fully open.
 Login and profile are covered in **USER_AUTH_INTEGRATION_GUIDE.md** — everything
 here assumes you already hold a user token.
 
+> There is a second, separate booking flow: the **discounted trial job** (cleaning
+> only, ₹100 with ₹40 back), where the customer's feedback onboards a trainee
+> professional. It has its own endpoints, its own status values and its own
+> screens — see **USER_TRIAL_BOOKING_INTEGRATION_GUIDE.md**. Don't try to serve
+> both from the components below; the statuses differ.
+
 > ### The worker app does not change
 > Nothing in this feature alters a single worker-facing endpoint, payload or
 > socket event. `GET /api/jobs/available`, `GET /api/jobs/mine`,

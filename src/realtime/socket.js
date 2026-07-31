@@ -3,9 +3,11 @@ const jwt = require('jsonwebtoken');
 const Worker = require('../models/Worker');
 const User = require('../models/User');
 const ServiceRequest = require('../models/ServiceRequest');
+const TrialJob = require('../models/TrialJob');
 const dispatch = require('../services/dispatchService');
 const { offerView, assignedView } = require('../utils/jobPayload');
 const { customerView } = require('../utils/requestPayload');
+const { trialUserView } = require('../utils/trialPayload');
 const emitter = require('./emitter');
 
 /**
@@ -44,6 +46,17 @@ const emitter = require('./emitter');
  *   request:completed { request }   worker submitted their rating → job closed
  *   request:paid      { request }   payment captured and the worker credited
  *   request:cancelled { request }
+ *
+ * Discounted trial bookings push a parallel `trial:*` set, each carrying a
+ * `trial` object (see utils/trialPayload.trialUserView):
+ *   trials:active            { trials:[trial] }  snapshot on connect
+ *   trial:searching          { trial, candidateNumber, candidateCount }
+ *   trial:accepted           { trial }   a trainee took it (worker card inside)
+ *   trial:started            { trial }
+ *   trial:feedback_requested { trial }   work done → pay + rate to onboard them
+ *   trial:paid               { trial, rewardCredited }
+ *   trial:no_workers         { trial, reason }  queue spent; `canRetry` is true
+ *   trial:cancelled          { trial }
  *
  * Customer → server: none. Everything the customer does (raise, cancel, retry,
  * pay) is a REST call — those are state-changing, need request bodies and proper
@@ -187,6 +200,23 @@ async function initCustomerSocket(socket) {
     });
   } catch (err) {
     /* non-fatal — the customer app's polling GET covers this */
+  }
+
+  // Trial bookings ride the same channel but their own event, so an app that
+  // hasn't built the trial screens simply never listens for it. A completed trial
+  // still owing feedback is included: that form is what onboards the worker, and
+  // it's the easiest thing to lose track of across an app restart.
+  try {
+    const liveTrials = await TrialJob.find(TrialJob.needsCustomerQuery(socket.userId))
+      .sort({ createdAt: -1 })
+      .limit(5);
+    if (liveTrials.length) {
+      socket.emit('trials:active', {
+        trials: await Promise.all(liveTrials.map((j) => trialUserView(j))),
+      });
+    }
+  } catch (err) {
+    /* non-fatal — GET /api/user/trials/active covers this */
   }
 }
 
