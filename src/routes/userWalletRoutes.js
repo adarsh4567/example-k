@@ -1,10 +1,10 @@
 const router = require('express').Router();
 const userAuth = require('../middleware/userAuth');
-const c = require('../controllers/userTrialController');
+const c = require('../controllers/userWalletController');
 
-// The customer's reward wallet. Its only funding source today is trial cashback,
-// which is why the handler lives with the trial controller — if a second reward
-// reason appears, move it to its own controller then, not speculatively.
+// The customer's reward wallet. It started as trial cashback only and lived with
+// the trial controller for that reason; referral rewards fund it too now, so it
+// has its own controller and service.
 router.use(userAuth);
 
 router.get('/', c.getWallet);

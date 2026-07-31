@@ -3,9 +3,14 @@ const mongoose = require('mongoose');
 /**
  * Append-only ledger of reward money credited to a CUSTOMER.
  *
- * Today it has one writer: the cashback a customer earns for booking a
- * discounted trial job (40% of what they paid, by default). The row is written
- * when their trial payment is captured.
+ * Two writers today, both triggered by a captured payment:
+ *   trial_reward     → the cashback a customer earns for booking a discounted
+ *                      trial job (40% of what they paid, by default).
+ *   referral_reward  → paid to the inviter, and referral_signup to the invitee,
+ *   referral_signup    when an invited customer's first booking is paid for.
+ *
+ * The sum of this ledger is the customer's `credits` balance everywhere it is
+ * shown — the Wallet screen and the Account hero card read the same number.
  *
  * Deliberately a separate collection from WalletTransaction (the worker ledger)
  * rather than one polymorphic table, for the same reason `User` and `Worker` are
@@ -24,7 +29,12 @@ const mongoose = require('mongoose');
  */
 
 const TX_TYPES = ['credit', 'debit'];
-const TX_SOURCES = ['trial_reward', 'adjustment', 'redemption'];
+// 'referral_reward' pays the INVITER, 'referral_signup' pays the invitee. They
+// are two sources rather than one because both rows are keyed to the same
+// document — the invited account — and the unique index below is on
+// { source, sourceId, type }: sharing a source would make the second insert
+// collide with the first and silently pay only one side.
+const TX_SOURCES = ['trial_reward', 'referral_reward', 'referral_signup', 'adjustment', 'redemption'];
 
 const userWalletTransactionSchema = new mongoose.Schema(
   {

@@ -1,11 +1,23 @@
 const { ok, fail } = require('../utils/response');
+const { getUserStats } = require('../services/userStatsService');
+const { getCreditsBalance } = require('../services/userWalletService');
+const referral = require('../services/referralService');
+const { SUPPORT_PHONE, SUPPORT_EMAIL, SUPPORT_HOURS } = require('../config/rewardsConfig');
 
 /**
- * The customer profile — phone and name, nothing more.
+ * The customer profile the Account tab renders.
  *
- * The name is normally captured during OTP verification (see userAuthController);
- * this exists so the app can read the account back and let the user rename
- * themselves later.
+ * Started as phone and name. It now also carries the three hero-card figures
+ * (credits, jobs done, lifetime spend), the referral code, and the support
+ * contact — all of which the app previously hardcoded, and all of which are
+ * bundled here rather than given their own endpoints for one reason: the app
+ * already calls this on every cold start to revalidate its token. Folding them in
+ * costs no extra round trip; four little endpoints would have cost four.
+ *
+ * The cost is that a profile read now runs three indexed queries instead of
+ * zero. That is the right trade for a per-launch call — and if it ever stops
+ * being, the split is mechanical (`stats`/`credits` already come from their own
+ * services).
  */
 
 const NAME_MAX = 60;
@@ -20,7 +32,17 @@ function initial(name) {
   return name && name.trim() ? name.trim()[0].toUpperCase() : '?';
 }
 
-function buildProfilePayload(user) {
+/**
+ * @param {object} user - a User document (mutated if a referral code gets minted)
+ */
+async function buildProfilePayload(user) {
+  // All independent — one round of I/O, not three.
+  const [credits, stats, referralCode] = await Promise.all([
+    getCreditsBalance(user._id),
+    getUserStats(user._id),
+    referral.ensureReferralCode(user),
+  ]);
+
   return {
     id: user._id,
     phone: user.phone,
@@ -32,13 +54,34 @@ function buildProfilePayload(user) {
     status: user.status,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt || null,
+
+    // Spendable reward balance — the SAME number GET /api/user/wallet reports,
+    // because both sum the one ledger. The app used to print a ₹150 constant
+    // here, so a customer's credits never moved whatever they earned or spent.
+    credits,
+    currency: 'INR',
+
+    // Server-side booking counts. The app derived these from device-local
+    // history, which missed every instant and trial booking and reset on
+    // reinstall. See services/userStatsService.
+    stats: {
+      jobsCompleted: stats.jobsCompleted,
+      lifetimeSpend: stats.lifetimeSpend,
+    },
+
+    // Null only if minting collided five times (see referralService) — the app
+    // should hide the share control rather than render an empty badge.
+    referralCode,
+
+    // Served so changing the support number doesn't need an app release.
+    support: { phone: SUPPORT_PHONE, email: SUPPORT_EMAIL, hours: SUPPORT_HOURS },
   };
 }
 
 // GET /api/user/profile
 async function getProfile(req, res, next) {
   try {
-    return ok(res, { profile: buildProfilePayload(req.user) }, 'Profile fetched');
+    return ok(res, { profile: await buildProfilePayload(req.user) }, 'Profile fetched');
   } catch (err) {
     next(err);
   }
@@ -57,7 +100,7 @@ async function updateProfile(req, res, next) {
 
     user.fullName = trimmed;
     await user.save();
-    return ok(res, { profile: buildProfilePayload(user) }, 'Profile updated');
+    return ok(res, { profile: await buildProfilePayload(user) }, 'Profile updated');
   } catch (err) {
     next(err);
   }

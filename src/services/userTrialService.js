@@ -6,6 +6,7 @@ const gateway = require('./paymentGateway');
 const { computeTrialPrice, CURRENCY } = require('./pricingService');
 const { transitionWorker } = require('./workerStatusService');
 const { notifyWorker } = require('./notificationService');
+const referral = require('./referralService');
 const emitter = require('../realtime/emitter');
 const {
   TRIAL_ENABLED,
@@ -575,6 +576,9 @@ async function confirmTrialPayment(job, { orderId, gatewayReference } = {}) {
     await creditUserReward(job).catch((err) =>
       console.error('[user-trial] reward retry failed for job', String(job._id), err.message)
     );
+    // Same retry reasoning as the cashback above: a crash between capture and
+    // the referral payout leaves it unpaid, and both are idempotent.
+    await referral.creditOnFirstPaymentSafe(job.requestedBy);
     return { ok: true, job, payment: job.payment, alreadyPaid: true, rewarded: false };
   }
   if (payment.status !== 'processing') {
@@ -626,6 +630,10 @@ async function confirmTrialPayment(job, { orderId, gatewayReference } = {}) {
   }
 
   const reward = await creditUserReward(claimed);
+  // A trial counts as the invited customer's first booking. Deliberately after
+  // the capture and never allowed to throw — a referral must not be able to
+  // turn a confirmed payment into an error response.
+  await referral.creditOnFirstPaymentSafe(claimed.requestedBy);
   const finalJob = reward.job || claimed;
   await pushToCustomer(finalJob, 'trial:paid', { rewardCredited: reward.created });
   return { ok: true, job: finalJob, payment: finalJob.payment, rewarded: reward.created, reward: reward.transaction };
@@ -696,16 +704,6 @@ async function creditUserReward(job) {
   return { created: true, job: updated || job, transaction };
 }
 
-/** Reward balance for a customer — always summed from the ledger. */
-async function getUserRewardBalance(userId) {
-  const rows = await UserWalletTransaction.aggregate([
-    { $match: { user: new mongoose.Types.ObjectId(String(userId)) } },
-    { $group: { _id: '$type', total: { $sum: '$amount' } } },
-  ]);
-  const by = rows.reduce((acc, r) => ({ ...acc, [r._id]: r.total }), {});
-  return (by.credit || 0) - (by.debit || 0);
-}
-
 module.exports = {
   checkEligibility,
   findCandidates,
@@ -718,7 +716,6 @@ module.exports = {
   initiateTrialPayment,
   confirmTrialPayment,
   creditUserReward,
-  getUserRewardBalance,
   pushToCustomer,
   isPayable,
   validCoord,

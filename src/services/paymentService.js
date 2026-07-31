@@ -1,6 +1,7 @@
 const ServiceRequest = require('../models/ServiceRequest');
 const WalletTransaction = require('../models/WalletTransaction');
 const gateway = require('./paymentGateway');
+const referral = require('./referralService');
 const { CURRENCY } = require('./pricingService');
 
 /**
@@ -135,6 +136,9 @@ async function confirmPayment(request, { orderId, gatewayReference } = {}) {
     await creditWorker(request).catch((err) =>
       console.error('Worker credit retry failed for request', String(request._id), err.message)
     );
+    // Same reasoning: a crash between capture and the referral payout leaves it
+    // unpaid, and the call is idempotent, so re-run it here too.
+    await referral.creditOnFirstPaymentSafe(request.user);
     return { ok: true, request, payment: request.payment, alreadyPaid: true, credited: false };
   }
   if (payment.status !== 'processing') {
@@ -191,6 +195,10 @@ async function confirmPayment(request, { orderId, gatewayReference } = {}) {
   }
 
   const credit = await creditWorker(claimed);
+  // If this was an invited customer's first captured payment, both sides of the
+  // referral get paid now. After the capture, and never allowed to throw — a
+  // referral must not be able to turn a confirmed payment into an error.
+  await referral.creditOnFirstPaymentSafe(claimed.user);
   return { ok: true, request: credit.request || claimed, payment: (credit.request || claimed).payment, credited: credit.created };
 }
 

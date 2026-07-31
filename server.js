@@ -27,6 +27,9 @@ const userProfileRoutes = require('./src/routes/userProfileRoutes');
 const userServiceRequestRoutes = require('./src/routes/userServiceRequestRoutes');
 const userTrialRoutes = require('./src/routes/userTrialRoutes');
 const userWalletRoutes = require('./src/routes/userWalletRoutes');
+const userCouponRoutes = require('./src/routes/userCouponRoutes');
+const userReferralRoutes = require('./src/routes/userReferralRoutes');
+const userAddressRoutes = require('./src/routes/userAddressRoutes');
 const catalogRoutes = require('./src/routes/catalogRoutes');
 const dispatchService = require('./src/services/dispatchService');
 const videoJobsService = require('./src/services/videoJobsService');
@@ -85,6 +88,11 @@ app.use('/api/user/service-requests', userServiceRequestRoutes);
 // Discounted trial bookings (cleaning only) + the reward wallet they credit.
 app.use('/api/user/trials', userTrialRoutes);
 app.use('/api/user/wallet', userWalletRoutes);
+// The Account tab's remaining screens: offers, the referral programme, and the
+// cloud copy of the address book.
+app.use('/api/user/coupons', userCouponRoutes);
+app.use('/api/user/referral', userReferralRoutes);
+app.use('/api/user/addresses', userAddressRoutes);
 
 // 404 + error handling
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));

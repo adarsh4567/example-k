@@ -1,5 +1,4 @@
 const TrialJob = require('../models/TrialJob');
-const UserWalletTransaction = require('../models/UserWalletTransaction');
 const { ok, fail } = require('../utils/response');
 const { isValidSubcategory, categoryName, SERVICE_CATALOG } = require('../services/serviceCatalog');
 const { computeTrialPrice } = require('../services/pricingService');
@@ -379,44 +378,6 @@ async function submitFeedback(req, res, next) {
   }
 }
 
-/**
- * GET /api/user/wallet — reward balance + statement.
- *
- * Balance is summed from the ledger rather than cached on the account, so every
- * rupee traces back to the trial that earned it.
- */
-async function getWallet(req, res, next) {
-  try {
-    const [balance, transactions] = await Promise.all([
-      userTrial.getUserRewardBalance(req.user._id),
-      UserWalletTransaction.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(50),
-    ]);
-
-    return ok(
-      res,
-      {
-        balance,
-        currency: 'INR',
-        // Redemption isn't built — see the integration guide. Surfaced explicitly
-        // so the app doesn't render a "use balance" control that can't work.
-        redeemable: false,
-        transactions: transactions.map((t) => ({
-          id: t._id,
-          type: t.type,
-          amount: t.amount,
-          currency: t.currency,
-          source: t.source,
-          note: t.note,
-          createdAt: t.createdAt,
-        })),
-      },
-      'Reward wallet'
-    );
-  } catch (err) {
-    next(err);
-  }
-}
-
 module.exports = {
   loadOwnedTrial,
   getOffer,
@@ -430,5 +391,4 @@ module.exports = {
   confirmPayment,
   getFeedbackForm,
   submitFeedback,
-  getWallet,
 };
