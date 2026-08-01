@@ -3,6 +3,7 @@ const { categoryName, subcategoryName } = require('../services/serviceCatalog');
 const { MAX_ATTEMPTS } = require('../config/dispatchConfig');
 const { PAYABLE_JOB_STATUS } = require('../services/paymentService');
 const { trackingView } = require('../services/trackingService');
+const { toPublicUrl } = require('./publicUrl');
 
 /**
  * The customer's view of a service request — the single serializer behind every
@@ -162,6 +163,11 @@ async function customerView(request) {
         id: worker._id,
         name: worker.fullName,
         phone: worker.phone, // revealed after acceptance
+        // Absolute, public, no-auth URL — loadable directly by a bare <Image>.
+        // `worker.profilePhoto` is stored as a relative `/uploads/...` path (or
+        // null if the worker never uploaded one, which the client already
+        // handles by falling back to an initials avatar).
+        photoUrl: toPublicUrl(worker.profilePhoto),
         rating: worker.rating,
         jobsCompleted: worker.jobsCompleted,
         // Distance as measured when the offer went out — a fixed historical
