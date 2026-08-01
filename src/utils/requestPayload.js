@@ -2,6 +2,7 @@ const Worker = require('../models/Worker');
 const { categoryName, subcategoryName } = require('../services/serviceCatalog');
 const { MAX_ATTEMPTS } = require('../config/dispatchConfig');
 const { PAYABLE_JOB_STATUS } = require('../services/paymentService');
+const { trackingView } = require('../services/trackingService');
 
 /**
  * The customer's view of a service request — the single serializer behind every
@@ -40,6 +41,34 @@ function offersThisAttempt(request) {
   return (request.offers || []).filter((o) => (o.attempt || 1) === attempt);
 }
 
+/**
+ * The single value the customer app renders its headline, badge and timeline
+ * from. Composed here rather than in the app because it folds together three
+ * things the client would otherwise have to combine correctly and identically on
+ * every screen: `status`, `workStage`, and the geofence's `arrivalStatus`.
+ *
+ *   searching     → looking for a professional
+ *   en_route      → assigned, on the way
+ *   arriving_soon → close (see trackingConfig thresholds)
+ *   arrived       → at the address, hasn't started yet
+ *   working       → work under way (the worker tapped "Start job")
+ *   work_done     → work finished, payment due
+ *   completed / cancelled / expired → as the status
+ *
+ * Note the ORDER of the checks: `workStage === 'working'` outranks anything the
+ * geofence says. Starting is a decision a human made; arrival is something GPS
+ * guessed. Once the work has begun, a wandering fix must not be able to walk the
+ * customer's screen back to "arriving soon".
+ */
+function stageOf(request) {
+  if (request.status !== 'in_progress') {
+    if (request.status === 'pending_rating') return 'work_done';
+    return request.status; // searching | completed | cancelled | expired
+  }
+  if ((request.workStage || 'en_route') === 'working') return 'working';
+  return (request.tracking && request.tracking.arrivalStatus) || 'en_route';
+}
+
 function paymentView(request) {
   const p = request.payment || {};
   return {
@@ -71,6 +100,11 @@ async function customerView(request) {
   const base = {
     id: request._id,
     status: request.status,
+    // The composed value to render from — see stageOf(). `status` is unchanged
+    // and still authoritative for payment/cancel/retry; `stage` is the finer
+    // grain the tracking screen needs and is additive on top of it.
+    stage: stageOf(request),
+    workStage: request.status === 'in_progress' ? request.workStage || 'en_route' : null,
 
     category: request.category,
     categoryName: categoryName(request.category),
@@ -130,11 +164,45 @@ async function customerView(request) {
         phone: worker.phone, // revealed after acceptance
         rating: worker.rating,
         jobsCompleted: worker.jobsCompleted,
+        // Distance as measured when the offer went out — a fixed historical
+        // figure. `liveDistanceKm` below (while live) is the moving one; both
+        // are shipped while in progress because the assigned-professional card
+        // shows the former and the map header the latter.
         distanceKm: acceptedOffer ? acceptedOffer.distanceKm : null,
-        location: worker.currentLocation || null,
       };
+
+      /**
+       * Live position is spliced in ONLY while the job is actively in progress.
+       *
+       * Before this gate, the tracking block — GPS coordinates, heading, live
+       * distance — stayed on the payload for `pending_rating` and `completed`
+       * too, because WORKER_VISIBLE_STATUS (which only ever controlled the
+       * CONTACT reveal) was reused to gate this as well. The result: a job
+       * finished last week would forever answer GET .../:id with the worker's
+       * last GPS fix from right before they started working — a permanent
+       * location pin on every customer's history screen, for every worker
+       * they've ever booked. Contact info (name/phone/rating) is legitimately
+       * historical — the customer may need to call about a finished job. A GPS
+       * trail is not, and nothing about this feature needs it to outlive the
+       * job.
+       *
+       * The key keeps its name and its GeoJSON shape so an app reading
+       * `worker.location.coordinates` today starts getting a live value with no
+       * change; everything else on the block is new and optional. Falls back to
+       * the availability heartbeat until the first ping lands, so the marker has
+       * somewhere to start rather than popping in from nowhere — but ONLY while
+       * live, for the same reason: that heartbeat is itself a position that
+       * shouldn't linger on a finished job's payload.
+       */
+      if (request.status === 'in_progress') {
+        const live = trackingView(request.tracking, now);
+        Object.assign(base.worker, live, {
+          location: live.location || worker.currentLocation || null,
+        });
+      }
     }
     base.acceptedAt = request.acceptedAt;
+    if (request.workStartedAt) base.workStartedAt = request.workStartedAt;
   }
 
   if (request.status === 'pending_rating') base.workDoneAt = request.workDoneAt;
@@ -157,6 +225,12 @@ function summaryView(request) {
   return {
     id: request._id,
     status: request.status,
+    // Same derived value as the full view, and cheap — stageOf() reads only
+    // fields already on the row, no worker lookup. Shipped here so the list card
+    // and the detail screen can never disagree about whether the professional is
+    // on the way, at the door, or already working.
+    stage: stageOf(request),
+    etaMinutes: (request.tracking && request.tracking.etaMinutes) ?? null,
     category: request.category,
     categoryName: categoryName(request.category),
     subcategory: request.subcategory,
@@ -172,4 +246,4 @@ function summaryView(request) {
   };
 }
 
-module.exports = { customerView, summaryView, paymentView };
+module.exports = { customerView, summaryView, paymentView, stageOf };

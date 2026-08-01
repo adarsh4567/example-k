@@ -17,14 +17,32 @@ here assumes you already hold a user token.
 > screens — see **USER_TRIAL_BOOKING_INTEGRATION_GUIDE.md**. Don't try to serve
 > both from the components below; the statuses differ.
 
-> ### The worker app does not change
-> Nothing in this feature alters a single worker-facing endpoint, payload or
+> ### The worker app does not change *(as of this feature — see below)*
+> Nothing in **this** feature alters a single worker-facing endpoint, payload or
 > socket event. `GET /api/jobs/available`, `GET /api/jobs/mine`,
 > `POST /api/jobs/:id/accept|decline|complete|rate`, `PUT /api/jobs/availability`,
 > `GET /api/earnings/summary` and the `jobs:open` / `job:offer` / `job:taken` /
 > `job:expired` / `job:accept` / `job:decline` / `presence:update` socket
 > contract are all byte-identical. No worker-side source file was touched.
 > **Section 12** lists exactly what was and wasn't changed, and why.
+
+> ### ⚠️ Superseded in part by live tracking
+> A later feature — live worker tracking — **did** change the worker flow, and
+> extended the customer payloads described here. Two things below are now
+> incomplete rather than wrong:
+>
+> * `status:'in_progress'` is no longer one undivided state. It splits into the
+>   professional **travelling** to the address and then **working**, once they
+>   tap "Start job". Every customer payload carries a composed `stage`
+>   (`en_route` / `arriving_soon` / `arrived` / `working` / …) that you should
+>   render from instead of `status`. `status` itself is unchanged, so nothing
+>   here breaks.
+> * `worker.location` is now a **live** position streamed while they travel, not
+>   the stale availability heartbeat it used to be, and the worker block gained
+>   `etaMinutes`, `arrivalStatus`, `heading` and friends.
+>
+> Full contract: **USER_APP_LIVE_TRACKING_GUIDE.md** (customer app) and
+> **WORKER_APP_JOB_FLOW_AND_TRACKING_GUIDE.md** (worker app).
 
 ---
 

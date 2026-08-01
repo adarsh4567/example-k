@@ -2,6 +2,7 @@ const ServiceRequest = require('../models/ServiceRequest');
 const { ok, fail } = require('../utils/response');
 const dispatch = require('../services/dispatchService');
 const { offerView, assignedView } = require('../utils/jobPayload');
+const { trackingView } = require('../services/trackingService');
 
 function validCoord(lat, lng) {
   return (
@@ -118,9 +119,60 @@ async function declineJob(req, res, next) {
   }
 }
 
+/**
+ * POST /api/jobs/:id/location   { lat, lng, heading?, speedKmh?, accuracy? }
+ *
+ * Live position while travelling to the customer. Accepted only between accept
+ * and start; the server geofences it and pushes the customer's map.
+ *
+ * A throttled ping (they arrive faster than the server's floor) answers 200 with
+ * `throttled:true`, not an error — see MIN_PING_INTERVAL_MS in trackingConfig
+ * for why. The app should treat both the same and just keep pinging.
+ */
+async function updateJobLocation(req, res, next) {
+  try {
+    const result = await dispatch.recordWorkerLocation(req.params.id, req.worker, req.body || {});
+    if (!result.ok) return fail(res, result.reason, result.code || 400);
+    return ok(
+      res,
+      {
+        throttled: result.throttled,
+        arrivalStatus: result.arrivalStatus,
+        arrivalStatusChanged: result.changed,
+        tracking: trackingView(result.request.tracking),
+      },
+      result.throttled ? 'Ping throttled — position unchanged' : 'Location updated'
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/jobs/:id/start
+ *
+ * The worker reached the address and is beginning the work. This is what moves
+ * the job from "on the way" to "in progress" on the customer's screen, and what
+ * unlocks the Complete button in the worker app.
+ */
+async function startJob(req, res, next) {
+  try {
+    const result = await dispatch.startWork(req.params.id, req.worker);
+    if (!result.ok) return fail(res, result.reason, result.code || 400);
+    return ok(
+      res,
+      { job: assignedView(result.request) },
+      result.alreadyStarted ? 'This job is already started' : 'Job started — the customer has been notified'
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /api/jobs/:id/complete
 // Marks the on-site work done. The job is NOT finished yet — it moves to
 // pending_rating and the app should immediately show the rating card.
+// Requires the job to have been STARTED first (see TRACKING_REQUIRE_JOB_START).
 async function completeJob(req, res, next) {
   try {
     const result = await dispatch.markWorkDone(req.params.id, req.worker);
@@ -149,5 +201,6 @@ async function rateJob(req, res, next) {
 }
 
 module.exports = {
-  updateAvailability, availableJobs, myJobs, acceptJob, declineJob, completeJob, rateJob,
+  updateAvailability, availableJobs, myJobs, acceptJob, declineJob,
+  updateJobLocation, startJob, completeJob, rateJob,
 };

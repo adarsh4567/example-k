@@ -23,6 +23,13 @@ Base URL: `http://16.112.64.28:4000` (`PORT` in `.env`).
 > assessment at a partner shop instead — so there is no electrical trial to book.
 > `category` is fixed server-side; sending `category: "electrical"` is a `422`,
 > not a silent substitution.
+>
+> **3. Live tracking was added later.** The `trial` payload now also carries a
+> composed `stage` — the *same* vocabulary a normal booking uses, precisely so
+> one map component serves both — plus a live `worker.location` / `etaMinutes` /
+> `arrivalStatus` while the trainee travels, and `trial:location` /
+> `trial:arriving_soon` / `trial:arrived` socket events. All additive; the status
+> mapping in §5 is unchanged. See **USER_APP_LIVE_TRACKING_GUIDE.md** §6.
 
 ---
 

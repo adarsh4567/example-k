@@ -5,6 +5,8 @@ const { notifyWorker } = require('./notificationService');
 const emitter = require('../realtime/emitter');
 const { offerView } = require('../utils/jobPayload');
 const paymentService = require('./paymentService');
+const tracking = require('./trackingService');
+const { REQUIRE_JOB_START } = require('../config/trackingConfig');
 const {
   INITIAL_RADIUS_KM,
   RADIUS_INCREMENT_KM,
@@ -371,6 +373,15 @@ async function acceptRequest(requestId, worker) {
     if (String(o.worker) === String(worker._id)) o.status = 'accepted';
     else if (o.status === 'offered') o.status = 'missed';
   });
+
+  // Accepting means "I am on my way", not "I am working" — the worker still has
+  // to travel, and the customer's map is about to start following them. Reset
+  // the tracking block as part of the same save so a row that was cancelled and
+  // re-raised, or accepted by a different worker on a retry, can never open with
+  // the previous worker's last known position painted on the customer's map.
+  updated.workStage = 'en_route';
+  updated.workStartedAt = null;
+  tracking.resetTracking(updated);
   await updated.save();
 
   // Bind the worker to this job so they won't receive further offers.
@@ -404,6 +415,129 @@ async function declineRequest(requestId, worker) {
   return { ok: true, request };
 }
 
+// Which customer event announces each arrival status. Exported-shaped as a map
+// rather than an if/else so the trial flow can mirror it exactly (see
+// controllers/trialWorkerController) and the two can't fall out of step.
+const ARRIVAL_EVENT = {
+  en_route: 'request:en_route',
+  arriving_soon: 'request:arriving_soon',
+  arrived: 'request:arrived',
+};
+
+/**
+ * A live GPS ping from the worker on their way to the job.
+ *
+ * Only accepted while the worker is actually travelling — assigned to this job,
+ * `in_progress`, and still `en_route`. Once they've tapped "Start job" the
+ * customer's map has served its purpose and further pings are refused: they
+ * would keep a worker's position broadcasting to a customer for the whole
+ * duration of the work, which is more location sharing than the feature needs.
+ *
+ * Two things are pushed to the customer, and the split is the point:
+ *   `request:location` on EVERY accepted ping — a compact delta, because the map
+ *      needs a new dot every few seconds and re-serialising the whole request
+ *      (which re-reads the Worker row) that often is waste.
+ *   `request:arriving_soon` / `request:arrived` only when the badge actually
+ *      moves — full `request` payload, same shape as every other request:* event
+ *      and as the polling GET, so the app's normal update path handles it.
+ *
+ * @returns {{ok:true, request, throttled, changed, arrivalStatus}} | {{ok:false, code, reason}}
+ */
+async function recordWorkerLocation(requestId, worker, body) {
+  const request = await ServiceRequest.findById(requestId);
+  if (!request) return { ok: false, code: 404, reason: 'Request not found' };
+  if (String(request.acceptedBy || '') !== String(worker._id)) {
+    return { ok: false, code: 403, reason: 'This job is not assigned to you' };
+  }
+  if (request.status !== 'in_progress') {
+    // 409 rather than a quiet 200: a worker app still pinging for a job that is
+    // done or cancelled has a bug worth surfacing, and swallowing it would let
+    // that app leak the worker's position long after the job ended.
+    return { ok: false, code: 409, reason: `Cannot track a ${request.status} job` };
+  }
+  if (request.workStage !== 'en_route') {
+    return { ok: false, code: 409, reason: 'This job has already started — tracking has ended' };
+  }
+
+  const result = tracking.applyPing(request, body);
+  if (!result.ok) return result;
+
+  // A throttled ping changed nothing, so there is nothing to write or announce.
+  if (result.throttled) {
+    return { ok: true, request, throttled: true, changed: false, arrivalStatus: result.tracking.arrivalStatus };
+  }
+
+  await request.save();
+
+  const view = tracking.trackingView(request.tracking);
+  emitter.emitToUser(request.user, 'request:location', {
+    requestId: String(request._id),
+    stage: view.arrivalStatus,
+    worker: { id: String(worker._id), ...view },
+  });
+
+  if (result.changed) {
+    // The badge moved. Send the full request so every screen — list card,
+    // detail header, timeline — updates off one payload.
+    //
+    // Named off the NEW status rather than "promoted vs not", because the change
+    // can go backwards: a worker who arrives and then drives off again demotes to
+    // arriving_soon or en_route, and announcing that as `request:arriving_soon`
+    // would put "Arriving soon" on screen for someone heading away.
+    await pushToCustomer(request, ARRIVAL_EVENT[view.arrivalStatus]);
+  }
+
+  return { ok: true, request, throttled: false, changed: result.changed, arrivalStatus: view.arrivalStatus };
+}
+
+/**
+ * The worker has reached the address and is starting the work.
+ *
+ * This is the step the flow was missing: before it, accepting a job put it
+ * straight into a state whose only exit was "Mark complete", so the worker app
+ * offered that button while the worker was still in traffic and the customer's
+ * screen said "work in progress" for the whole journey.
+ *
+ * It is not gated on `arrivalStatus === 'arrived'`. GPS is the wrong thing to
+ * make a worker's ability to do their job depend on: indoor fixes, dead
+ * batteries, a denied permission and dense-building drift are all routine, and
+ * a worker standing in the customer's kitchen unable to start because the server
+ * thinks they're 300 m away is a far worse failure than an early tap. The
+ * geofence informs the customer's screen; it does not hold the worker's flow
+ * hostage. A start logged from far away is warned about instead, so the pattern
+ * is visible to ops if it is ever abused.
+ */
+async function startWork(requestId, worker) {
+  const request = await ServiceRequest.findById(requestId);
+  if (!request) return { ok: false, code: 404, reason: 'Request not found' };
+  if (String(request.acceptedBy || '') !== String(worker._id)) {
+    return { ok: false, code: 403, reason: 'This job is not assigned to you' };
+  }
+  if (request.status !== 'in_progress') {
+    return { ok: false, code: 409, reason: `Cannot start a ${request.status} job` };
+  }
+  // Idempotent: a double tap, or a retry after a dropped response, gets the same
+  // success and the original timestamp rather than a confusing error.
+  if (request.workStage === 'working') {
+    return { ok: true, request, alreadyStarted: true };
+  }
+
+  if ((request.tracking || {}).arrivalStatus !== 'arrived') {
+    console.warn(
+      `[tracking] job ${request._id} started by worker ${worker._id} while ` +
+        `arrivalStatus='${(request.tracking || {}).arrivalStatus || 'en_route'}' ` +
+        `(last known ${(request.tracking || {}).distanceMeters ?? 'unknown'} m from site)`
+    );
+  }
+
+  request.workStage = 'working';
+  request.workStartedAt = new Date();
+  await request.save();
+
+  await pushToCustomer(request, 'request:started');
+  return { ok: true, request, alreadyStarted: false };
+}
+
 // Worker marks the on-site work done. This does NOT complete the job — it
 // moves to pending_rating and the worker stays bound (blocked from new
 // offers) until they submit a rating via rateJob().
@@ -415,6 +549,20 @@ async function markWorkDone(requestId, worker) {
   }
   if (request.status !== 'in_progress') {
     return { ok: false, code: 409, reason: `Cannot complete a ${request.status} job` };
+  }
+  if (request.workStage !== 'working') {
+    if (REQUIRE_JOB_START) {
+      return {
+        ok: false,
+        code: 409,
+        reason: 'Start the job before completing it — tap "Start job" once you reach the customer',
+      };
+    }
+    // Flag off (mid-rollout, old worker builds): accept the completion but
+    // synthesise the start, so `workStartedAt` is never null and the customer's
+    // timeline doesn't show work that finished without ever beginning.
+    request.workStage = 'working';
+    request.workStartedAt = request.workStartedAt || new Date();
   }
   request.status = 'pending_rating';
   request.workDoneAt = new Date();
@@ -588,6 +736,8 @@ module.exports = {
   retryRequest,
   acceptRequest,
   declineRequest,
+  recordWorkerLocation,
+  startWork,
   markWorkDone,
   rateJob,
   cancelRequest,

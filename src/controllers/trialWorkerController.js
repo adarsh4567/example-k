@@ -5,6 +5,8 @@ const { trialWorkerView } = require('../utils/trialPayload');
 const { FEEDBACK_SLA_MINUTES } = require('../config/trialConfig');
 const trialJobs = require('../services/trialJobsService');
 const userTrial = require('../services/userTrialService');
+const tracking = require('../services/trackingService');
+const emitter = require('../realtime/emitter');
 
 /**
  * Worker-facing trial endpoints.
@@ -18,6 +20,15 @@ const userTrial = require('../services/userTrialService');
 
 // Statuses that count as the worker's "current" trial job (still in flight).
 const LIVE_STATUSES = ['assigned', 'accepted', 'in_progress', 'completed'];
+
+// The trial twin of dispatchService's ARRIVAL_EVENT — same three transitions,
+// same ordering, `trial:` prefix. Kept parallel on purpose: the customer app
+// handles the two sets with one code path.
+const TRIAL_ARRIVAL_EVENT = {
+  en_route: 'trial:en_route',
+  arriving_soon: 'trial:arriving_soon',
+  arrived: 'trial:arrived',
+};
 
 // The trial job to act on / show. A worker only ever has one live at a time.
 async function findLatestTrialJob(workerId) {
@@ -85,6 +96,10 @@ async function acceptTrial(req, res, next) {
     const candidate = job.candidates[job.candidateIndex];
     if (candidate) candidate.status = 'accepted';
     job.searchExpiresAt = null;
+    // Accepting means "I'm on my way" — the customer's map starts following this
+    // worker now. Clear any tracking left over from an earlier candidate or an
+    // earlier search attempt so the map can't open on somebody else's last dot.
+    tracking.resetTracking(job);
     await job.save();
 
     await transitionWorker(req.worker, 'trial_accepted', { reason: 'Worker accepted trial job', trialJob: job._id });
@@ -136,6 +151,71 @@ async function declineTrial(req, res, next) {
     }
 
     return ok(res, { trialJob: view }, 'Trial job declined — back in the queue');
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/worker/trial/:id/location   { lat, lng, heading?, speedKmh?, accuracy? }
+ *
+ * The trial twin of POST /api/jobs/:id/location. Accepted only while the job is
+ * `accepted` — that is this flow's "travelling" state, since a trial has always
+ * had an explicit start step (`in_progress`). Once started, the customer's map
+ * has done its job and further pings are refused rather than quietly broadcast.
+ *
+ * The geofence, the thresholds and the payload are the shared ones from
+ * trackingService, so a trial and a normal booking look identical to the
+ * customer app's map.
+ */
+async function updateTrialLocation(req, res, next) {
+  try {
+    const job = await loadOwnedJob(req, res);
+    if (!job) return;
+    if (job.status !== 'accepted') {
+      return fail(res, `Location is only tracked while travelling to the job (status: ${job.status})`, 409);
+    }
+
+    const result = tracking.applyPing(job, req.body || {});
+    if (!result.ok) return fail(res, result.reason, result.code || 400);
+
+    if (result.throttled) {
+      return ok(
+        res,
+        { throttled: true, arrivalStatus: result.tracking.arrivalStatus, arrivalStatusChanged: false },
+        'Ping throttled — position unchanged'
+      );
+    }
+
+    await job.save();
+
+    // Same split as the normal flow: a compact delta on every ping so the marker
+    // moves smoothly, the full `trial` payload only when the badge actually
+    // changes so every screen updates off one shape.
+    const view = tracking.trackingView(job.tracking);
+    emitter.emitToUser(job.requestedBy, 'trial:location', {
+      trialId: String(job._id),
+      stage: view.arrivalStatus,
+      worker: { id: String(req.worker._id), ...view },
+    });
+
+    if (result.changed) {
+      // Named off the NEW status, mirroring the normal flow's ARRIVAL_EVENT map:
+      // the change can go backwards (arrive, then drive off), and calling that
+      // "arriving soon" would be the wrong words on the customer's screen.
+      await userTrial.pushToCustomer(job, TRIAL_ARRIVAL_EVENT[view.arrivalStatus]).catch(() => {});
+    }
+
+    return ok(
+      res,
+      {
+        throttled: false,
+        arrivalStatus: view.arrivalStatus,
+        arrivalStatusChanged: result.changed,
+        tracking: view,
+      },
+      'Location updated'
+    );
   } catch (err) {
     next(err);
   }
@@ -204,4 +284,6 @@ async function completeTrial(req, res, next) {
   }
 }
 
-module.exports = { getStatus, acceptTrial, declineTrial, startTrial, completeTrial, LIVE_STATUSES };
+module.exports = {
+  getStatus, acceptTrial, declineTrial, updateTrialLocation, startTrial, completeTrial, LIVE_STATUSES,
+};

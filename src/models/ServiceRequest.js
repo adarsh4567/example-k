@@ -1,10 +1,13 @@
 const mongoose = require('mongoose');
+const { workerTrackingSchema } = require('./workerTrackingSchema');
 
 /**
  * A customer's on-demand service request and its dispatch lifecycle.
  *
  *   searching      → offers broadcast to nearby workers, waiting for someone to accept
- *   in_progress    → a worker accepted (first-to-accept-wins); work is ongoing
+ *   in_progress    → a worker accepted (first-to-accept-wins); they are either
+ *                    travelling to the address or doing the work — which of the
+ *                    two is `workStage` (see below), not a separate status
  *   pending_rating → the worker marked the on-site work done, but the job is
  *                    NOT yet completed — it only becomes `completed` once the
  *                    worker submits their 1-5 rating for the job. The worker
@@ -28,6 +31,32 @@ const mongoose = require('mongoose');
  */
 
 const REQUEST_STATUS = ['searching', 'in_progress', 'pending_rating', 'completed', 'cancelled', 'expired'];
+
+/**
+ * Where the worker is WITHIN `status:'in_progress'`.
+ *
+ *   en_route → accepted, travelling to the address. Live position is pushed to
+ *              the customer's map and the server geofences it (see `tracking`).
+ *   working  → the worker tapped "Start job" on site; the work itself is running.
+ *
+ * This is a sub-field rather than two more values in REQUEST_STATUS, and that
+ * choice is load-bearing. `status` already gates payment eligibility
+ * (paymentService.PAYABLE_JOB_STATUS), cancellation, the worker's active-vs-
+ * history split in GET /api/jobs/mine, OPEN_STATUSES, liveForUserQuery and the
+ * admin panel's filters. Adding `en_route`/`working` to the enum would mean
+ * touching every one of those call sites and re-testing transitions that have
+ * nothing to do with where the worker physically is. As a sub-field it is purely
+ * additive: code that only reads `status` is untouched and still correct, and
+ * only the screens that care about travel read the new value.
+ *
+ * ARRIVAL is deliberately NOT in here. Arriving is something we OBSERVE from GPS
+ * — noisy, reversible, occasionally wrong. Starting is something the worker
+ * DECIDES — one-way and auditable. Folding an observation into the same field as
+ * a decision means a bad fix can appear to undo a human action. They compose for
+ * the UI in the payload builder's derived `stage`, which is the right place for
+ * a presentation concern.
+ */
+const WORK_STAGE = ['en_route', 'working'];
 
 // not_due   → work isn't done yet, so there is nothing to pay
 // due       → work is done; waiting for the customer to pay
@@ -130,6 +159,14 @@ const serviceRequestSchema = new mongoose.Schema(
 
     acceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', default: null },
     acceptedAt: Date,
+
+    // Travel-vs-work stage inside `in_progress` (see WORK_STAGE above), and the
+    // worker's live position on the way there (see models/workerTrackingSchema).
+    // Both are meaningless before acceptance and are reset when a worker binds.
+    workStage: { type: String, enum: WORK_STAGE, default: 'en_route' },
+    workStartedAt: Date,  // when the worker tapped "Start job" on site
+    tracking: { type: workerTrackingSchema, default: () => ({}) },
+
     workDoneAt: Date,     // when the worker tapped "Complete" (entered pending_rating)
     completedAt: Date,    // when the rating was submitted (job fully closed)
     cancelledAt: Date,
@@ -182,6 +219,7 @@ serviceRequestSchema.index({ location: '2dsphere' });
 serviceRequestSchema.index({ user: 1, status: 1, createdAt: -1 });
 
 serviceRequestSchema.statics.STATUS = REQUEST_STATUS;
+serviceRequestSchema.statics.WORK_STAGE = WORK_STAGE;
 serviceRequestSchema.statics.PAYMENT_STATUS = PAYMENT_STATUS;
 serviceRequestSchema.statics.PAYMENT_METHODS = PAYMENT_METHODS;
 

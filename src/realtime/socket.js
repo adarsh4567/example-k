@@ -32,6 +32,17 @@ const emitter = require('./emitter');
  * Worker → server (with ack callback):
  *   job:accept  { requestId }  ->  { ok, job } | { ok:false, message }
  *   job:decline { requestId }  ->  { ok } | { ok:false, message }
+ *   job:location { requestId, lat, lng, heading?, speedKmh?, accuracy? }
+ *                              ->  { ok, throttled, arrivalStatus, changed }
+ *                                  live position while travelling to a job.
+ *                                  Identical effect to POST /api/jobs/:id/location
+ *                                  — same service, same validation, same pushes —
+ *                                  offered on the socket because a ping every few
+ *                                  seconds over an already-open connection is much
+ *                                  cheaper than an HTTP round trip each time. REST
+ *                                  stays the reliable path for when the socket is
+ *                                  down; the app should use REST if it has to pick
+ *                                  one, and the throttle makes sending both safe.
  *   presence:update { isOnline?, lat?, lng? } -> { ok, availability }
  *
  * ── Customer channel ────────────────────────────────────────────
@@ -42,6 +53,22 @@ const emitter = require('./emitter');
  *   request:accepted  { request }   a professional took the job (worker card inside)
  *   request:expired   { request, reason }  nobody accepted; `canRetry` says if
  *                                          the retry button should be live
+ *   request:location  { requestId, stage, worker }  the assigned worker moved.
+ *                                   The ONLY event here that does NOT carry a
+ *                                   full `request`: it fires every few seconds
+ *                                   while they travel, and re-serialising the
+ *                                   whole request (a Worker lookup each time)
+ *                                   at that rate is waste. It carries just the
+ *                                   marker delta — location, heading, eta,
+ *                                   arrivalStatus. Merge it into the worker
+ *                                   block you already hold.
+ *   request:arriving_soon { request }  the professional is close
+ *   request:arrived   { request }   they are at the address
+ *   request:en_route  { request }   …and back out again. Rare, but arrival can
+ *                                   reverse (they drove off), so the transition
+ *                                   is announced in both directions rather than
+ *                                   leaving a stale "Arrived" on screen.
+ *   request:started   { request }   they tapped "Start job" → work under way
  *   request:work_done { request }   worker marked the work done → payment is due
  *   request:completed { request }   worker submitted their rating → job closed
  *   request:paid      { request }   payment captured and the worker credited
@@ -52,7 +79,11 @@ const emitter = require('./emitter');
  *   trials:active            { trials:[trial] }  snapshot on connect
  *   trial:searching          { trial, candidateNumber, candidateCount }
  *   trial:accepted           { trial }   a trainee took it (worker card inside)
- *   trial:started            { trial }
+ *   trial:location           { trialId, stage, worker }  marker delta, as above
+ *   trial:arriving_soon      { trial }
+ *   trial:arrived            { trial }
+ *   trial:en_route           { trial }   arrival reversed (see request:en_route)
+ *   trial:started            { trial }   they began the work on site
  *   trial:feedback_requested { trial }   work done → pay + rate to onboard them
  *   trial:paid               { trial, rewardCredited }
  *   trial:no_workers         { trial, reason }  queue spent; `canRetry` is true
@@ -142,6 +173,32 @@ function init(httpServer) {
         const result = await dispatch.declineRequest(data && data.requestId, worker);
         if (!result.ok) return cb({ ok: false, message: result.reason });
         cb({ ok: true });
+      } catch (err) {
+        cb({ ok: false, message: err.message });
+      }
+    });
+
+    // Live position while travelling to an accepted job. Deliberately thin: it
+    // hands straight to the same dispatch service the REST endpoint calls, so
+    // ownership, status, throttling and the geofence are enforced in exactly one
+    // place and the two transports cannot drift.
+    socket.on('job:location', async (data, ack) => {
+      const cb = typeof ack === 'function' ? ack : () => {};
+      try {
+        const worker = await Worker.findById(socket.workerId);
+        if (!worker) return cb({ ok: false, message: 'Worker not found' });
+        const result = await dispatch.recordWorkerLocation(
+          data && data.requestId,
+          worker,
+          data || {}
+        );
+        if (!result.ok) return cb({ ok: false, message: result.reason });
+        cb({
+          ok: true,
+          throttled: result.throttled,
+          arrivalStatus: result.arrivalStatus,
+          changed: result.changed,
+        });
       } catch (err) {
         cb({ ok: false, message: err.message });
       }

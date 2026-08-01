@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { workerTrackingSchema } = require('./workerTrackingSchema');
 
 /**
  * Filter 2: the single subsidised "trial job" a worker does after clearing
@@ -17,8 +18,10 @@ const mongoose = require('mongoose');
  * Job lifecycle (`status`) — identical for both sources, which is why the worker
  * app needed no changes to support customer-booked trials:
  *   assigned    → offered to the worker, countdown running (offerExpiresAt)
- *   accepted    → worker accepted the offer
- *   in_progress → worker started the job
+ *   accepted    → worker accepted; they are now travelling to the host. Their
+ *                 live position is pushed to the customer's map and geofenced
+ *                 server-side (see `tracking`).
+ *   in_progress → worker arrived and started the job
  *   completed   → worker finished checkout; customer feedback now requested
  *   declined    → worker declined (declinedReason='worker_declined')
  *   expired     → offer countdown lapsed (declinedReason='timeout')
@@ -155,6 +158,18 @@ const trialJobSchema = new mongoose.Schema(
     offerExpiresAt: { type: Date },        // countdown for the offer screen
     acceptedAt: Date,
     startedAt: Date,
+
+    // The worker's live position while they travel to the host, plus the
+    // server's arrival verdict (see models/workerTrackingSchema).
+    //
+    // A trial needs no `workStage` twin of ServiceRequest's: this flow already
+    // separates travel from work in its own status enum — `accepted` IS en route
+    // and `in_progress` IS on-site — because a trial has always had an explicit
+    // start step. The tracking sub-document is therefore only ever live between
+    // `accepted` and `in_progress`, and the two flows still present one shape to
+    // the customer app because both splice the same trackingView() into their
+    // `worker` block.
+    tracking: { type: workerTrackingSchema, default: () => ({}) },
     completedAt: Date,
     declinedAt: Date,
     // 'customer_cancelled' only occurs on user-booked trials. The job `status`

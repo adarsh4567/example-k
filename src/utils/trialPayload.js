@@ -2,13 +2,30 @@
 // sees consistent shapes. The host's phone is hidden pre-accept (same rule as a
 // normal job's customer contact) and revealed once the worker accepts.
 
+// Safe to require at module scope: trackingService pulls in only utils/geo and
+// a config file, so it can't close a cycle back to here (unlike ../models/Worker
+// below, which is required lazily for exactly that reason).
+const { trackingView } = require('../services/trackingService');
+
 // View shown to the WORKER. `revealContact` becomes true after acceptance.
 function trialWorkerView(job) {
   const revealContact = ['accepted', 'in_progress', 'completed'].includes(job.status);
+  const t = job.tracking || {};
   return {
     id: job._id,
     type: 'trial',
     status: job.status,
+
+    // ── What the worker may do right now ──
+    // Mirrors the normal job's assignedView so the worker app's primary button
+    // switches on the same field names in both flows. A trial needs no
+    // `workStage`: `accepted` IS travelling and `in_progress` IS on-site here.
+    shouldSendLocation: job.status === 'accepted',
+    canStart: job.status === 'accepted',
+    canComplete: job.status === 'in_progress',
+    arrivalStatus: t.arrivalStatus || 'en_route',
+    distanceMeters: t.distanceMeters ?? null,
+    etaMinutes: t.etaMinutes ?? null,
     category: job.category,
     subcategory: job.subcategory,
     jobDescription: job.jobDescription,
@@ -25,6 +42,37 @@ function trialWorkerView(job) {
     startedAt: job.startedAt,
     completedAt: job.completedAt,
   };
+}
+
+/**
+ * The trial's `stage`, in the same vocabulary a normal booking uses.
+ *
+ *   assigned    → 'searching'
+ *   accepted    → whatever the geofence says: en_route | arriving_soon | arrived
+ *   in_progress → 'working'
+ *   completed   → 'work_done'   (payment + the feedback form are still outstanding)
+ *   declined/expired → 'ended'
+ *
+ * 'completed' maps to 'work_done' rather than 'completed' on purpose: a trial's
+ * status stays `completed` forever — there is no later value — while the
+ * customer still owes payment and the feedback that onboards the worker. Calling
+ * it 'completed' on the customer's screen would say "nothing left to do" at the
+ * exact moment two things are left to do. `feedbackPending` and `payment.payable`
+ * below say which.
+ */
+function trialStageOf(job) {
+  switch (job.status) {
+    case 'assigned':
+      return 'searching';
+    case 'accepted':
+      return (job.tracking && job.tracking.arrivalStatus) || 'en_route';
+    case 'in_progress':
+      return 'working';
+    case 'completed':
+      return 'work_done';
+    default:
+      return 'ended'; // declined | expired — the candidate queue was spent
+  }
 }
 
 /**
@@ -58,6 +106,13 @@ async function trialUserView(job) {
     id: job._id,
     type: 'trial',
     status: job.status,
+    // The composed value the tracking screen renders from, with exactly the same
+    // vocabulary as a normal booking's (utils/requestPayload.stageOf) so one map
+    // component serves both flows. The mapping differs because the underlying
+    // status enums do: here `accepted` is the travelling state and `in_progress`
+    // is the working one, whereas a normal request splits `in_progress` with
+    // `workStage`. That difference is exactly what this field hides.
+    stage: trialStageOf(job),
 
     category: job.category,
     subcategory: job.subcategory,
@@ -134,11 +189,28 @@ async function trialUserView(job) {
         phone: worker.phone,
         rating: worker.rating,
         jobsCompleted: worker.jobsCompleted,
+        // Distance measured when the offer went out — historical, fixed. The
+        // moving one is `liveDistanceKm`, from the live block below.
         distanceKm: candidate ? candidate.distanceKm : null,
         // Honest labelling: this professional is completing their onboarding, and
         // the discount is the reason the customer is meeting them.
         isTrainee: true,
       };
+
+      // Live tracking, spliced in ONLY while `accepted` — this flow's travelling
+      // state, and the only state in which a ping is ever accepted (see
+      // trialWorkerController.updateTrialLocation). Gating on `assigned` (which
+      // also covers `in_progress`/`completed`) would leave the trainee's last GPS
+      // fix — taken right before they started the job — on the payload forever,
+      // the same leak fixed on the normal-booking side of this file
+      // (utils/requestPayload.customerView). Identical field names to that
+      // builder — `location`, `heading`, `etaMinutes`, `arrivalStatus`,
+      // `locationStale` — are what let the customer app render one map component
+      // for a trial and a normal booking; only the gating condition differs,
+      // because the two flows split travel-vs-work on different fields.
+      if (job.status === 'accepted') {
+        Object.assign(view.worker, trackingView(job.tracking, now));
+      }
     }
   }
 
@@ -157,6 +229,10 @@ function trialSummaryView(job) {
     id: job._id,
     type: 'trial',
     status: job.status,
+    // Cheap — trialStageOf() reads only fields already on the row. Shipped so a
+    // list card and the detail screen can't disagree about where the trainee is.
+    stage: trialStageOf(job),
+    etaMinutes: (job.tracking && job.tracking.etaMinutes) ?? null,
     category: job.category,
     subcategory: job.subcategory,
     userPrice: p.userPrice ?? p.totalPrice ?? null,
@@ -197,4 +273,4 @@ function trialAdminView(job) {
   };
 }
 
-module.exports = { trialWorkerView, trialUserView, trialSummaryView, trialAdminView };
+module.exports = { trialWorkerView, trialUserView, trialSummaryView, trialAdminView, trialStageOf };

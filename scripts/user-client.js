@@ -85,13 +85,26 @@ function showRequest(r) {
   activeId = r.id;
   const bits = [
     `status=${r.status}`,
+    // The composed value the real app renders from — it splits `in_progress`
+    // into on-the-way / arriving / arrived / working, which `status` alone
+    // cannot express.
+    `stage=${r.stage}`,
     `attempt=${r.attempt}/${r.maxAttempts}`,
     `radius=${r.radiusKm}km`,
     `notified=${r.workersNotified}`,
     `payment=${r.payment.status}${r.payment.payable ? ' (PAYABLE)' : ''}`,
   ];
   console.log(`  → ${r.id}  ${bits.join('  ')}`);
-  if (r.worker) console.log(`  → assigned: ${r.worker.name} · ${r.worker.phone} · ${r.worker.distanceKm}km · rating ${r.worker.rating ?? 'new'}`);
+  if (r.worker) {
+    const w = r.worker;
+    console.log(`  → assigned: ${w.name} · ${w.phone} · ${w.distanceKm}km at offer · rating ${w.rating ?? 'new'}`);
+    if (w.locationUpdatedAt) {
+      console.log(
+        `  → live: ${w.arrivalStatus} · ${w.liveDistanceKm ?? '?'} km away · ` +
+          `eta ${w.etaMinutes != null ? `~${w.etaMinutes} min` : 'unknown'}${w.locationStale ? ' · POSITION STALE' : ''}`
+      );
+    }
+  }
   if (r.status === 'searching') startCountdown(r.searchExpiresAt);
   else stopCountdown();
   if (r.status === 'expired') {
@@ -139,9 +152,13 @@ function connectSocket() {
   // so there is one render path regardless of transport.
   const events = {
     'request:searching': 'searching (wave sent)',
-    'request:accepted': '✅ A PROFESSIONAL ACCEPTED',
+    'request:accepted': '✅ A PROFESSIONAL ACCEPTED — on the way',
     'request:expired': '⌛ EXPIRED — nobody accepted',
-    'request:work_done': '🧹 WORK DONE — payment due',
+    'request:arriving_soon': '🛵 ARRIVING SOON',
+    'request:arrived': '📍 ARRIVED at your address',
+    'request:en_route': '↩️  moved back away — on the way again',
+    'request:started': '🧹 WORK STARTED',
+    'request:work_done': '✅ WORK DONE — payment due',
     'request:completed': '🏁 COMPLETED (worker rated the job)',
     'request:paid': '💰 PAID — worker credited',
     'request:cancelled': '🚫 CANCELLED',
@@ -153,6 +170,17 @@ function connectSocket() {
       showRequest(d.request);
       if (AUTO && d.request && d.request.payment && d.request.payment.payable) await pay('upi');
     });
+  });
+
+  // The one push that does NOT carry a full `request`: the marker delta, sent on
+  // every ping while the professional travels. This is what the real app feeds
+  // straight into its map without re-rendering anything else — printed here as a
+  // one-liner rather than through showRequest() for exactly that reason.
+  socket.on('request:location', (d) => {
+    const w = d.worker || {};
+    const km = w.liveDistanceKm != null ? `${w.liveDistanceKm} km` : '? km';
+    const eta = w.etaMinutes != null ? `~${w.etaMinutes} min` : 'eta unknown';
+    console.log(`   📡 ${d.stage.padEnd(13)} ${km.padStart(8)} away · ${eta}${w.locationStale ? ' · STALE' : ''}`);
   });
 }
 

@@ -8,6 +8,7 @@ router.use(auth);
 router.get('/status', c.getStatus);          // fallback poll for waiting/submitted screens
 router.post('/:id/accept', c.acceptTrial);
 router.post('/:id/decline', c.declineTrial);
+router.post('/:id/location', c.updateTrialLocation); // live position while en route to the host
 router.post('/:id/start', c.startTrial);
 router.post('/:id/complete', c.completeTrial); // checkout → awaiting customer feedback
 
