@@ -14,7 +14,7 @@ router.put('/expertise', c.updateExpertise);
 router.put('/', upload.single('profilePhoto'), c.updateProfile);
 
 // Add a specialization via demo video (approved by a reviewer, not on upload).
-router.post('/expertise/video/presigned-url', specVideo.getPresignedUrl);
+router.post('/expertise/video/upload-signature', specVideo.getUploadSignature);
 router.post('/expertise/video/submit', specVideo.submit);
 
 module.exports = router;

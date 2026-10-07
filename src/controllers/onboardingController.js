@@ -1,5 +1,6 @@
 const Worker = require('../models/Worker');
 const { ok, fail } = require('../utils/response');
+const media = require('../services/mediaStorageService');
 const { isValidAadhaar, isValidPincode, isValidPhone, isValidOtp, ageFromDob } = require('../utils/validators');
 const { requestAadhaarOtp, verifyAadhaarOtp, requestEsignOtp, verifyEsignOtp } = require('../services/aadhaarService');
 const { matchFaces } = require('../services/faceMatchService');
@@ -83,7 +84,12 @@ async function updatePersonal(req, res, next) {
     worker.fullName = fullName.trim();
     worker.dob = new Date(dob);
     worker.gender = gender;
-    worker.profilePhoto = `/uploads/${req.file.filename}`;
+    worker.profilePhoto = await media.storeImage({
+      workerId: worker._id,
+      kind: 'profile',
+      file: req.file,
+      publicAsset: true,
+    });
     advance(worker, 'personal');
     await worker.save();
 
@@ -195,7 +201,11 @@ async function faceMatch(req, res, next) {
     if (!req.file) return fail(res, 'Live selfie is required', 422);
 
     if (!worker.faceMatch) worker.faceMatch = {};
-    worker.faceMatch.selfiePath = `/uploads/${req.file.filename}`;
+    worker.faceMatch.selfiePath = await media.storeImage({
+      workerId: worker._id,
+      kind: 'face-match',
+      file: req.file,
+    });
     worker.faceMatch.attempts = (worker.faceMatch.attempts || 0) + 1;
 
     const { matched } = await matchFaces(worker.faceMatch.selfiePath, worker.aadhaar.photoRef);
@@ -445,7 +455,9 @@ async function submitConsent(req, res, next) {
     worker.consent = {
       backgroundCheck: true,
       infoAccurate: true,
-      signaturePath: req.file ? `/uploads/${req.file.filename}` : worker.consent.signaturePath,
+      signaturePath: req.file
+        ? await media.storeImage({ workerId: worker._id, kind: 'signature', file: req.file })
+        : worker.consent.signaturePath,
       signedAt: new Date(),
       esignVerified: alreadyEsigned,
     };

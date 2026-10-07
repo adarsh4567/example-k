@@ -178,13 +178,13 @@ const workerSchema = new mongoose.Schema(
 
     // ── Filter 1: Practical Video Task ──
     // High-level state of the two-video practical task. Per-video records
-    // (S3 keys, scores) live in the WorkerOnboardingVideo collection.
+    // (Cloudinary asset IDs, scores) live in the WorkerOnboardingVideo collection.
     videoTask: {
       stage: {
         type: String,
         enum: [
           'not_started',        // no video work yet
-          'in_progress',        // at least one presigned URL issued
+          'in_progress',        // at least one signed upload form issued
           'review_pending',     // both videos uploaded, awaiting reviewer
           'approved',
           'rejected',           // rejected once — worker may re-upload
@@ -265,8 +265,10 @@ const workerSchema = new mongoose.Schema(
 workerSchema.statics.STATUS = APPLICATION_STATUS;
 workerSchema.statics.STEPS = ONBOARDING_STEPS;
 
-// Geospatial index for "nearby workers" dispatch queries ($geoNear).
-// Documents without currentLocation.coordinates are simply not indexed.
-workerSchema.index({ currentLocation: '2dsphere' });
+// Geospatial dispatch always uses these equality filters. Keeping them in the
+// geo index narrows candidate work before expertise checks.
+workerSchema.index({ currentLocation: '2dsphere', status: 1, 'availability.isOnline': 1, activeRequest: 1 });
+workerSchema.index({ status: 1, submittedAt: -1, createdAt: -1 });
+workerSchema.index({ 'videoTask.stage': 1, 'videoTask.staleAlerted': 1, 'videoTask.submittedAt': 1 });
 
 module.exports = mongoose.model('Worker', workerSchema);

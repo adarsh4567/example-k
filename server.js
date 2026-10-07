@@ -1,4 +1,5 @@
 require('dotenv').config();
+require('./src/config/validateEnv')();
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -8,6 +9,8 @@ const morgan = require('morgan');
 
 const connectDB = require('./src/config/db');
 const errorHandler = require('./src/middleware/errorHandler');
+const requestTiming = require('./src/middleware/requestTiming');
+const { createRateLimiter } = require('./src/middleware/rateLimit');
 
 const authRoutes = require('./src/routes/authRoutes');
 const onboardingRoutes = require('./src/routes/onboardingRoutes');
@@ -38,28 +41,59 @@ const assessmentJobsService = require('./src/services/assessmentJobsService');
 const socket = require('./src/realtime/socket');
 
 const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
 
 // Ensure the uploads directory exists (profile photos, selfies, signatures).
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+if (process.env.CLOUDINARY_MODE !== 'real' && !fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
 // Core middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(morgan('dev'));
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin: allowedOrigins.length
+    ? (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin))
+    : '*',
+}));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || '100kb' }));
+app.use(requestTiming);
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'tiny' : 'dev', {
+  skip: (req) => req.path === '/health/live' || req.path === '/health/ready',
+}));
+
+// Protect the small free-tier process from accidental polling loops and make
+// OTP/admin credential abuse much more expensive. Socket traffic has its own
+// authenticated channel and does not pass through these HTTP buckets.
+app.use('/api', createRateLimiter({ windowMs: 60_000, max: 600 }));
+app.use(['/api/auth', '/api/user/auth'], createRateLimiter({
+  windowMs: 10 * 60_000,
+  max: 20,
+  key: (req) => `${req.ip}:${String(req.body?.phone || '').slice(0, 20)}`,
+  message: 'Too many authentication attempts. Please try again later.',
+}));
+app.use('/api/admin/login', createRateLimiter({
+  windowMs: 15 * 60_000,
+  max: 20,
+  message: 'Too many admin login attempts. Please try again later.',
+}));
 
 // Serve uploaded files statically so stored paths are viewable.
-app.use('/uploads', express.static(uploadsDir));
+if (process.env.CLOUDINARY_MODE !== 'real') app.use('/uploads', express.static(uploadsDir));
 
 // Health check
 app.get('/', (req, res) => {
   res.json({ service: 'Kaaryo Worker Onboarding API', status: 'ok' });
 });
-
-// Admin panel — single static file, served explicitly (not the whole project root).
-app.get(['/admin', '/admin.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin.html'));
+app.get('/health/live', (req, res) => res.json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()) }));
+app.get('/health/ready', (req, res) => {
+  const ready = connectDB.readiness();
+  res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', database: ready ? 'connected' : 'disconnected' });
 });
 
 // Routes
@@ -67,7 +101,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/places', placesRoutes);
 app.use('/api/profile', profileRoutes);
-app.use('/api/service-requests', serviceRequestRoutes);
+if (process.env.ENABLE_LEGACY_PUBLIC_REQUESTS === 'true') {
+  app.use('/api/service-requests', serviceRequestRoutes);
+}
 app.use('/api/jobs', jobsRoutes);
 app.use('/api/earnings', earningsRoutes);
 app.use('/api/admin', adminRoutes);
@@ -101,6 +137,9 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 
 const server = http.createServer(app);
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
+server.requestTimeout = 120_000;
 socket.init(server); // attach the Socket.IO real-time channel to the same server
 
 connectDB()
@@ -122,3 +161,27 @@ connectDB()
     console.error('❌ Failed to start server:', err.message);
     process.exit(1);
   });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}; draining connections`);
+  dispatchService.stopSweeper();
+  videoJobsService.stopSweeper();
+  trialJobsService.stopSweeper();
+  assessmentJobsService.stopSweeper();
+
+  const forceExit = setTimeout(() => process.exit(1), 10_000);
+  if (forceExit.unref) forceExit.unref();
+  server.close(async () => {
+    await connectDB.disconnectDB().catch((err) => console.error('MongoDB shutdown error:', err.message));
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
+
+module.exports = { app, server, shutdown };

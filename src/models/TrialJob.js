@@ -239,6 +239,10 @@ trialJobSchema.index({ location: '2dsphere' });
 
 // "This customer's trial bookings, newest first" — the customer app's hot read.
 trialJobSchema.index({ requestedBy: 1, createdAt: -1 });
+trialJobSchema.index({ requestedBy: 1, status: 1, createdAt: -1 });
+trialJobSchema.index({ worker: 1, createdAt: -1 });
+trialJobSchema.index({ source: 1, status: 1, offerExpiresAt: 1 });
+trialJobSchema.index({ status: 1, 'feedback.submittedAt': 1, completedAt: 1 });
 
 trialJobSchema.statics.STATUS = TRIAL_JOB_STATUS;
 

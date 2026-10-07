@@ -10,10 +10,10 @@ const mongoose = require('mongoose');
  */
 const otpSchema = new mongoose.Schema(
   {
-    phone: { type: String, required: true, index: true },
+    phone: { type: String, required: true },
     // Which app requested this code. Defaults to 'worker' so records written
     // before this field existed keep resolving to the worker flow.
-    purpose: { type: String, enum: ['worker', 'user'], default: 'worker', index: true },
+    purpose: { type: String, enum: ['worker', 'user'], default: 'worker' },
     code: { type: String, required: true },
     expiresAt: { type: Date, required: true },
     lastSentAt: { type: Date, required: true },
@@ -24,5 +24,6 @@ const otpSchema = new mongoose.Schema(
 
 // TTL index: Mongo removes the doc automatically at `expiresAt`.
 otpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+otpSchema.index({ phone: 1, purpose: 1 }, { unique: true });
 
 module.exports = mongoose.model('Otp', otpSchema);

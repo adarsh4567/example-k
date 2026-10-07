@@ -50,5 +50,9 @@ const assessmentSlotSchema = new mongoose.Schema(
 
 // The worker-facing slot search: available future slots for a set of partners.
 assessmentSlotSchema.index({ shopPartner: 1, startsAt: 1, isAvailable: 1 });
+assessmentSlotSchema.index(
+  { shopPartner: 1, startsAt: 1 },
+  { unique: true, partialFilterExpression: { cancelledAt: null } }
+);
 
 module.exports = mongoose.model('AssessmentSlot', assessmentSlotSchema);

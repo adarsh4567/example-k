@@ -1,4 +1,6 @@
 const { ok, fail } = require('../utils/response');
+const media = require('../services/mediaStorageService');
+const { toPublicUrl } = require('../utils/publicUrl');
 const { OPERATING_CITIES } = require('../services/placesService');
 const {
   SERVICE_CATALOG, isValidCategory, isValidSubcategory, buildExpertiseView,
@@ -57,7 +59,7 @@ async function buildProfilePayload(worker) {
     fullName: worker.fullName || null,
     displayInitial: initial(worker.fullName),
     profilePhoto: worker.profilePhoto || null,
-    photoUrl: worker.profilePhoto ? worker.profilePhoto : null, // relative; client prepends base URL
+    photoUrl: toPublicUrl(worker.profilePhoto),
     city,
     serviceArea: city,
     phone: worker.phone,
@@ -168,7 +170,12 @@ async function updateProfile(req, res, next) {
       worker.location.city = city;
     }
     if (req.file) {
-      worker.profilePhoto = `/uploads/${req.file.filename}`;
+      worker.profilePhoto = await media.storeImage({
+        workerId: worker._id,
+        kind: 'profile',
+        file: req.file,
+        publicAsset: true,
+      });
     }
 
     await worker.save();

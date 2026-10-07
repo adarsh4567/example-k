@@ -41,8 +41,8 @@ router.use(blockAssessmentCategory);
 // Instructions + limits for the Task Instructions screen.
 router.get('/tasks', c.getTasks);
 
-// Direct-to-S3 upload flow.
-router.post('/presigned-url', c.getPresignedUrl);
+// Signed direct-to-Cloudinary upload flow.
+router.post('/upload-signature', c.getUploadSignature);
 router.post('/confirm-upload', c.confirmUpload);
 
 // Resume support: which task videos are already uploaded/reviewed.

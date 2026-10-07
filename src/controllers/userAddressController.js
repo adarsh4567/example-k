@@ -41,7 +41,7 @@ const clean = (v, max) => String(v ?? '').trim().slice(0, max);
 // GET /api/user/addresses
 async function listAddresses(req, res, next) {
   try {
-    const rows = await UserAddress.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const rows = await UserAddress.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
     const active = rows.find((a) => a.isActive);
     return ok(
       res,

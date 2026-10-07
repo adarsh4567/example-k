@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
-const Otp = require('../models/Otp');
 const User = require('../models/User');
-const { sendOtpSms } = require('../services/smsService');
+const otpService = require('../services/otpService');
 const { ok, fail } = require('../utils/response');
 const { isValidPhone, isValidOtp } = require('../utils/validators');
 const referral = require('../services/referralService');
@@ -19,16 +18,6 @@ const { NAME_MAX } = require('./userProfileController');
  */
 
 const OTP_PURPOSE = 'user';
-const OTP_EXPIRY_MIN = Number(process.env.OTP_EXPIRY_MINUTES || 5);
-const RESEND_COOLDOWN = Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 30);
-const MOCK_OTP = process.env.MOCK_OTP || '123456';
-const SMS_MODE = process.env.SMS_MODE || 'mock';
-
-function generateCode() {
-  if (SMS_MODE === 'mock') return MOCK_OTP;
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
 function signUserToken(user) {
   return jwt.sign({ id: user._id, type: 'user' }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN || '30d',
@@ -60,31 +49,9 @@ async function sendOtp(req, res, next) {
       return fail(res, 'This account has been blocked', 403);
     }
 
-    const existing = await Otp.findOne({ phone, purpose: OTP_PURPOSE });
-    if (existing) {
-      const since = (Date.now() - new Date(existing.lastSentAt).getTime()) / 1000;
-      if (since < RESEND_COOLDOWN) {
-        return fail(res, `Please wait ${Math.ceil(RESEND_COOLDOWN - since)}s before requesting a new OTP`, 429);
-      }
-    }
-
-    const code = generateCode();
-    const now = new Date();
-    await Otp.findOneAndUpdate(
-      { phone, purpose: OTP_PURPOSE },
-      {
-        phone,
-        purpose: OTP_PURPOSE,
-        code,
-        expiresAt: new Date(now.getTime() + OTP_EXPIRY_MIN * 60 * 1000),
-        lastSentAt: now,
-        attempts: 0,
-      },
-      { upsert: true, new: true }
-    );
-
-    await sendOtpSms(phone, code);
-    return ok(res, { cooldownSeconds: RESEND_COOLDOWN }, 'OTP sent successfully');
+    const result = await otpService.issue(phone, OTP_PURPOSE);
+    if (!result.ok) return fail(res, result.reason, result.code);
+    return ok(res, { cooldownSeconds: result.cooldownSeconds }, 'OTP sent successfully');
   } catch (err) {
     next(err);
   }
@@ -121,16 +88,8 @@ async function verifyOtp(req, res, next) {
       }
     }
 
-    const record = await Otp.findOne({ phone, purpose: OTP_PURPOSE });
-    if (!record) return fail(res, 'OTP expired or not requested. Please request a new one', 400);
-    if (record.code !== otp) {
-      record.attempts += 1;
-      await record.save();
-      return fail(res, 'Incorrect OTP', 400);
-    }
-
-    // OTP correct — consume it so it can't be replayed.
-    await Otp.deleteOne({ phone, purpose: OTP_PURPOSE });
+    const consumed = await otpService.consume(phone, OTP_PURPOSE, otp);
+    if (!consumed.ok) return fail(res, consumed.reason, consumed.code);
 
     let user = await User.findOne({ phone });
     const isNewUser = !user;

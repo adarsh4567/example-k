@@ -6,8 +6,8 @@ const mongoose = require('mongoose');
  * the reviewer queue and per-video scoring stay easy to query and index.
  *
  * Lifecycle of `status`:
- *   pending      → presigned PUT URL issued, file not yet confirmed on S3
- *   uploaded     → confirmed present on S3 (headObject succeeded)
+ *   pending      → signed upload form issued, file not yet confirmed
+ *   uploaded     → confirmed present on Cloudinary
  *   under_review → a reviewer has opened the worker's submission
  *   approved / rejected → reviewer decision recorded
  *
@@ -31,8 +31,8 @@ const workerOnboardingVideoSchema = new mongoose.Schema(
     worker: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true, index: true },
     taskNumber: { type: Number, enum: [1, 2], required: true },
 
-    // Storage — only the S3 key is persisted, never a presigned URL.
-    s3Key: { type: String, required: true },
+    // Storage — only the Cloudinary public ID is persisted, never a signed URL.
+    assetId: { type: String, required: true },
     fileType: { type: String }, // video/mp4 | video/quicktime
     fileSizeBytes: { type: Number },
     durationSeconds: { type: Number },
@@ -54,6 +54,7 @@ const workerOnboardingVideoSchema = new mongoose.Schema(
 
 // Fast lookup / uniqueness: exactly one live record per task per worker.
 workerOnboardingVideoSchema.index({ worker: 1, taskNumber: 1 }, { unique: true });
+workerOnboardingVideoSchema.index({ status: 1, createdAt: 1 });
 
 workerOnboardingVideoSchema.statics.STATUS = VIDEO_STATUS;
 workerOnboardingVideoSchema.statics.REJECTION_REASONS = REJECTION_REASONS;

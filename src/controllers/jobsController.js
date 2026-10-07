@@ -1,4 +1,5 @@
 const ServiceRequest = require('../models/ServiceRequest');
+const Worker = require('../models/Worker');
 const { ok, fail } = require('../utils/response');
 const dispatch = require('../services/dispatchService');
 const { offerView, assignedView } = require('../utils/jobPayload');
@@ -18,26 +19,28 @@ async function updateAvailability(req, res, next) {
   try {
     const worker = req.worker;
     const { isOnline, lat, lng } = req.body;
+    const changes = { 'availability.lastSeenAt': new Date() };
 
     if (typeof isOnline !== 'undefined') {
-      worker.availability = worker.availability || {};
-      worker.availability.isOnline = !!isOnline;
+      changes['availability.isOnline'] = !!isOnline;
     }
     if (lat !== undefined || lng !== undefined) {
       if (!validCoord(Number(lat), Number(lng))) {
         return fail(res, 'Valid numeric lat and lng are required', 422);
       }
-      worker.currentLocation = { type: 'Point', coordinates: [Number(lng), Number(lat)] };
+      changes.currentLocation = { type: 'Point', coordinates: [Number(lng), Number(lat)] };
     }
-    worker.availability = worker.availability || {};
-    worker.availability.lastSeenAt = new Date();
-    await worker.save();
+    const updated = await Worker.findByIdAndUpdate(
+      worker._id,
+      { $set: changes },
+      { new: true, runValidators: true }
+    ).select('availability currentLocation');
 
     return ok(res, {
       availability: {
-        isOnline: worker.availability.isOnline || false,
-        lastSeenAt: worker.availability.lastSeenAt,
-        location: worker.currentLocation || null,
+        isOnline: updated.availability.isOnline || false,
+        lastSeenAt: updated.availability.lastSeenAt,
+        location: updated.currentLocation || null,
       },
     }, 'Availability updated');
   } catch (err) {
@@ -52,7 +55,7 @@ async function availableJobs(req, res, next) {
     const requests = await ServiceRequest.find({
       status: 'searching',
       offers: { $elemMatch: { worker: worker._id, status: 'offered' } },
-    }).sort({ createdAt: -1 });
+    }).sort({ createdAt: -1 }).limit(50).lean();
 
     return ok(res, { jobs: requests.map((r) => offerView(r, worker._id)) }, 'Available jobs');
   } catch (err) {
@@ -74,7 +77,8 @@ async function myJobs(req, res, next) {
     // fetch+limit; exact ordering within active/history is enforced below.
     const requests = await ServiceRequest.find({ acceptedBy: worker._id })
       .sort({ updatedAt: -1 })
-      .limit(50);
+      .limit(50)
+      .lean();
 
     // pending_rating stays "active" (not history) — the worker still owes a
     // rating before the job is done. This also lets the app re-show the

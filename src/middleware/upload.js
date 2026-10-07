@@ -6,12 +6,13 @@ const multer = require('multer');
 // trusting it verbatim, since it ends up in a path other tools (e.g. the admin
 // panel) render into HTML/attributes.
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 function safeExt(originalname) {
   const ext = path.extname(originalname || '').toLowerCase();
   return ALLOWED_EXTENSIONS.includes(ext) ? ext : '.jpg';
 }
 
-const storage = multer.diskStorage({
+const diskStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, '..', '..', 'uploads')),
   filename: (req, file, cb) => {
     const ext = safeExt(file.originalname);
@@ -20,9 +21,10 @@ const storage = multer.diskStorage({
     cb(null, `${file.fieldname}_${workerId}_${Math.round(process.hrtime()[1])}${ext}`);
   },
 });
+const storage = process.env.CLOUDINARY_MODE === 'real' ? multer.memoryStorage() : diskStorage;
 
 const imageFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith('image/')) return cb(null, true);
+  if (ALLOWED_MIME_TYPES.has(file.mimetype)) return cb(null, true);
   cb(new Error('ONLY_IMAGES'));
 };
 

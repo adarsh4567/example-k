@@ -96,8 +96,19 @@ const emitter = require('./emitter');
  */
 
 function init(httpServer) {
+  const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
   const io = new Server(httpServer, {
-    cors: { origin: '*', methods: ['GET', 'POST'] },
+    cors: { origin: allowedOrigins.length ? allowedOrigins : '*', methods: ['GET', 'POST'] },
+    // Location payloads are tiny. A low ceiling and disabled compression protect
+    // the free-tier CPU/heap from oversized frames and compression churn.
+    maxHttpBufferSize: 100 * 1024,
+    perMessageDeflate: false,
+    pingInterval: 25_000,
+    pingTimeout: 20_000,
+    connectTimeout: 20_000,
   });
   emitter.setIo(io);
 
@@ -109,9 +120,12 @@ function init(httpServer) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
       if (decoded.type === 'user') {
-        const user = await User.findById(decoded.id);
+        const user = await User.findById(decoded.id).select('_id status tokensValidFrom').lean();
         if (!user) return next(new Error('User not found'));
         if (user.status === 'blocked') return next(new Error('This account has been blocked'));
+        if (user.tokensValidFrom && decoded.iat * 1000 < new Date(user.tokensValidFrom).getTime()) {
+          return next(new Error('Session ended. Please sign in again'));
+        }
         socket.userId = String(user._id);
         return next();
       }
@@ -119,7 +133,7 @@ function init(httpServer) {
       // No `type` claim means a worker token issued before the customer app
       // existed — those are still valid, so absent is treated as 'worker'.
       if (decoded.type && decoded.type !== 'worker') return next(new Error('Unsupported token type'));
-      const worker = await Worker.findById(decoded.id);
+      const worker = await Worker.findById(decoded.id).select('_id').lean();
       if (!worker) return next(new Error('Worker not found'));
       socket.workerId = String(worker._id);
       next();
@@ -145,7 +159,7 @@ function init(httpServer) {
       const open = await ServiceRequest.find({
         status: 'searching',
         offers: { $elemMatch: { worker: socket.workerId, status: 'offered' } },
-      }).sort({ createdAt: -1 });
+      }).sort({ createdAt: -1 }).limit(50).lean();
       socket.emit('jobs:open', { jobs: open.map((r) => offerView(r, socket.workerId)) });
     } catch (err) {
       /* non-fatal */
@@ -155,7 +169,7 @@ function init(httpServer) {
     socket.on('job:accept', async (data, ack) => {
       const cb = typeof ack === 'function' ? ack : () => {};
       try {
-        const worker = await Worker.findById(socket.workerId);
+        const worker = await Worker.findById(socket.workerId).select('_id status activeRequest');
         if (!worker) return cb({ ok: false, message: 'Worker not found' });
         const result = await dispatch.acceptRequest(data && data.requestId, worker);
         if (!result.ok) return cb({ ok: false, message: result.reason });
@@ -168,7 +182,7 @@ function init(httpServer) {
     socket.on('job:decline', async (data, ack) => {
       const cb = typeof ack === 'function' ? ack : () => {};
       try {
-        const worker = await Worker.findById(socket.workerId);
+        const worker = await Worker.findById(socket.workerId).select('_id');
         if (!worker) return cb({ ok: false, message: 'Worker not found' });
         const result = await dispatch.declineRequest(data && data.requestId, worker);
         if (!result.ok) return cb({ ok: false, message: result.reason });
@@ -185,7 +199,7 @@ function init(httpServer) {
     socket.on('job:location', async (data, ack) => {
       const cb = typeof ack === 'function' ? ack : () => {};
       try {
-        const worker = await Worker.findById(socket.workerId);
+        const worker = await Worker.findById(socket.workerId).select('_id');
         if (!worker) return cb({ ok: false, message: 'Worker not found' });
         const result = await dispatch.recordWorkerLocation(
           data && data.requestId,
@@ -208,19 +222,21 @@ function init(httpServer) {
     socket.on('presence:update', async (data, ack) => {
       const cb = typeof ack === 'function' ? ack : () => {};
       try {
-        const worker = await Worker.findById(socket.workerId);
-        if (!worker) return cb({ ok: false, message: 'Worker not found' });
-        worker.availability = worker.availability || {};
-        if (typeof (data && data.isOnline) !== 'undefined') worker.availability.isOnline = !!data.isOnline;
+        const changes = { 'availability.lastSeenAt': new Date() };
+        if (typeof (data && data.isOnline) !== 'undefined') changes['availability.isOnline'] = !!data.isOnline;
         if (data && data.lat !== undefined && data.lng !== undefined) {
           const lat = Number(data.lat);
           const lng = Number(data.lng);
           if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-            worker.currentLocation = { type: 'Point', coordinates: [lng, lat] };
+            changes.currentLocation = { type: 'Point', coordinates: [lng, lat] };
           }
         }
-        worker.availability.lastSeenAt = new Date();
-        await worker.save();
+        const worker = await Worker.findByIdAndUpdate(
+          socket.workerId,
+          { $set: changes },
+          { new: true, runValidators: true }
+        ).select('availability currentLocation');
+        if (!worker) return cb({ ok: false, message: 'Worker not found' });
         cb({ ok: true, availability: { isOnline: worker.availability.isOnline, location: worker.currentLocation || null } });
       } catch (err) {
         cb({ ok: false, message: err.message });

@@ -70,7 +70,7 @@ async function computeEarningsSummary(workerId, period) {
     acceptedBy: workerId,
     status: 'completed',
     completedAt: { $gte: bounds.start, $lt: bounds.end },
-  }).select('completedAt pricing');
+  }).select('completedAt pricing.workerEarning').lean();
 
   // `days` is always the current Mon-Sun week regardless of `period` — reuse
   // periodJobs when period is already "week" instead of querying twice.
@@ -80,7 +80,7 @@ async function computeEarningsSummary(workerId, period) {
       acceptedBy: workerId,
       status: 'completed',
       completedAt: { $gte: week.start, $lt: week.end },
-    }).select('completedAt pricing');
+    }).select('completedAt pricing.workerEarning').lean();
 
   const totalEarned = periodJobs.reduce((sum, j) => sum + earning(j), 0);
   const jobsCount = periodJobs.length;
@@ -98,11 +98,13 @@ async function computeEarningsSummary(workerId, period) {
 
   // Wallet balance: lifetime earnings, period-independent — there's no
   // withdrawal system yet, so nothing has ever been deducted from it.
-  const allTimeJobs = await ServiceRequest.find({
-    acceptedBy: workerId,
-    status: 'completed',
-  }).select('pricing');
-  const walletBalance = allTimeJobs.reduce((sum, j) => sum + earning(j), 0);
+  // Sum in MongoDB instead of hydrating every historical job into the Render
+  // process. The response cost now stays constant as a worker's history grows.
+  const lifetime = await ServiceRequest.aggregate([
+    { $match: { acceptedBy: workerId, status: 'completed' } },
+    { $group: { _id: null, total: { $sum: { $ifNull: ['$pricing.workerEarning', 0] } } } },
+  ]);
+  const walletBalance = lifetime[0] ? lifetime[0].total : 0;
 
   return {
     period,

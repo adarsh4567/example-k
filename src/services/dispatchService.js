@@ -356,15 +356,45 @@ async function acceptRequest(requestId, worker) {
     return { ok: false, code: 409, reason: 'You already have an active job. Complete it first.' };
   }
 
-  const now = new Date();
-  // Atomic: only succeeds if still searching AND this worker was actually offered it.
-  const updated = await ServiceRequest.findOneAndUpdate(
-    { _id: requestId, status: 'searching', 'offers.worker': worker._id },
-    { $set: { status: 'in_progress', acceptedBy: worker._id, acceptedAt: now } },
+  // Claim the worker first. Checking the middleware-loaded document is not
+  // sufficient: two different jobs can be accepted concurrently with the same
+  // stale `activeRequest:null` snapshot. This compare-and-swap makes the worker
+  // the single lock across every request they may have been offered.
+  const claimedWorker = await Worker.findOneAndUpdate(
+    { _id: worker._id, status: 'approved', activeRequest: null },
+    { $set: { activeRequest: requestId } },
     { new: true }
   );
+  if (!claimedWorker) {
+    return { ok: false, code: 409, reason: 'You already have an active job. Complete it first.' };
+  }
+
+  const now = new Date();
+  // Atomic: only succeeds if still searching AND this worker was actually offered it.
+  let updated;
+  try {
+    updated = await ServiceRequest.findOneAndUpdate(
+      {
+        _id: requestId,
+        status: 'searching',
+        offers: { $elemMatch: { worker: worker._id, status: 'offered' } },
+      },
+      { $set: { status: 'in_progress', acceptedBy: worker._id, acceptedAt: now } },
+      { new: true }
+    );
+  } catch (err) {
+    await Worker.updateOne(
+      { _id: worker._id, activeRequest: requestId },
+      { $set: { activeRequest: null } }
+    ).catch(() => {});
+    throw err;
+  }
 
   if (!updated) {
+    await Worker.updateOne(
+      { _id: worker._id, activeRequest: requestId },
+      { $set: { activeRequest: null } }
+    );
     return { ok: false, code: 409, reason: 'This job is no longer available (already taken or expired)' };
   }
 
@@ -383,10 +413,6 @@ async function acceptRequest(requestId, worker) {
   updated.workStartedAt = null;
   tracking.resetTracking(updated);
   await updated.save();
-
-  // Bind the worker to this job so they won't receive further offers.
-  worker.activeRequest = updated._id;
-  await worker.save();
 
   // Real-time: tell every other offered worker the job is gone so it vanishes
   // from their screen instantly (no polling).
@@ -606,10 +632,12 @@ async function rateJob(requestId, worker, rating) {
   request.completedAt = new Date();
   await request.save();
 
-  // Free the worker and bump their completed-jobs counter (feeds the profile card).
-  worker.activeRequest = null;
-  worker.jobsCompleted = (worker.jobsCompleted || 0) + 1;
-  await worker.save();
+  // Free the worker and bump their completed-jobs counter without saving a stale
+  // auth snapshot over a concurrent availability/location heartbeat.
+  await Worker.updateOne(
+    { _id: worker._id, activeRequest: request._id },
+    { $set: { activeRequest: null }, $inc: { jobsCompleted: 1 } }
+  );
 
   // Real-time: the customer's job card moves to "completed". Payment may already
   // have been made (it fell due back at pending_rating) or may still be open —

@@ -29,8 +29,8 @@ const userAddressSchema = new mongoose.Schema(
     lng: { type: Number, required: true },
 
     // Which address the app is currently booking against. At most one true per
-    // customer, enforced by the controller (a partial unique index would reject
-    // the intermediate state of switching rather than allowing it).
+    // customer. The controller clears the old row before setting a new one, and
+    // the partial unique index below protects that invariant under concurrency.
     isActive: { type: Boolean, default: false },
   },
   { timestamps: true }
@@ -38,5 +38,9 @@ const userAddressSchema = new mongoose.Schema(
 
 // "This customer's address book, newest first" — the only read there is.
 userAddressSchema.index({ user: 1, createdAt: -1 });
+userAddressSchema.index(
+  { user: 1, isActive: 1 },
+  { unique: true, partialFilterExpression: { isActive: true } }
+);
 
 module.exports = mongoose.model('UserAddress', userAddressSchema);

@@ -1,6 +1,6 @@
 const Worker = require('../models/Worker');
 const SpecializationSubmission = require('../models/SpecializationSubmission');
-const s3 = require('../services/s3Service');
+const media = require('../services/mediaStorageService');
 const { categoryName, subcategoryName } = require('../services/serviceCatalog');
 const { notifyWorker } = require('../services/notificationService');
 const { resolveWorkerCategory } = require('../utils/workerCategory');
@@ -90,13 +90,17 @@ async function list(req, res, next) {
   }
 }
 
-// GET /api/admin/specialization-submissions/:id/video — presigned streaming URL
+// GET /api/admin/specialization-submissions/:id/video — expiring playback URL
 async function getVideo(req, res, next) {
   try {
     const sub = await SpecializationSubmission.findById(req.params.id);
     if (!sub) return fail(res, 'Submission not found', 404);
-    const url = await s3.getPresignedGetUrl(sub.s3Key);
-    return ok(res, { url, expiresInSeconds: s3.GET_URL_TTL }, 'Playback URL');
+    const url = await media.getDeliveryUrl(
+      sub.assetId,
+      'video',
+      media.formatForContentType(sub.fileType)
+    );
+    return ok(res, { url, expiresInSeconds: media.DELIVERY_URL_TTL }, 'Playback URL');
   } catch (err) {
     next(err);
   }

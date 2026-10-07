@@ -15,7 +15,17 @@ module.exports = async function auth(req, res, next) {
     if (decoded.type && decoded.type !== 'worker') {
       return fail(res, 'This endpoint requires a worker token', 401);
     }
-    const worker = await Worker.findById(decoded.id);
+    let workerQuery = Worker.findById(decoded.id);
+    // Jobs/location is the highest-frequency worker route and does not need the
+    // large onboarding, reference, review, or assessment subdocuments.
+    if (req.baseUrl === '/api/jobs') {
+      workerQuery = workerQuery.select(
+        'status activeRequest availability currentLocation jobsCompleted phone fullName rating'
+      );
+    } else if (req.baseUrl === '/api/earnings') {
+      workerQuery = workerQuery.select('_id');
+    }
+    const worker = await workerQuery;
     if (!worker) return fail(res, 'Worker not found', 401);
 
     req.worker = worker;

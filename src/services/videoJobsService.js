@@ -1,8 +1,8 @@
 /**
  * Background maintenance for the practical-video-task feature. Opt-in via
- * VIDEO_JOBS_ENABLED=true (needs working S3 access, so it stays off locally).
+ * VIDEO_JOBS_ENABLED=true (needs working Cloudinary access, so it stays off locally).
  *
- * 1. Reconciliation — an upload can succeed on S3 while the confirm-upload API
+ * 1. Reconciliation — an upload can succeed on Cloudinary while confirm-upload
  *    call is lost (network drop). This finds "pending" records whose object is
  *    actually present and promotes them to "uploaded".
  * 2. Reviewer SLA alert — flags submissions sitting in the queue > 48h so the
@@ -11,11 +11,12 @@
 
 const Worker = require('../models/Worker');
 const WorkerOnboardingVideo = require('../models/WorkerOnboardingVideo');
-const s3 = require('./s3Service');
+const media = require('./mediaStorageService');
 
 const SWEEP_INTERVAL_MS = (Number(process.env.VIDEO_JOBS_SWEEP_MINUTES) || 10) * 60 * 1000;
 const RECONCILE_MIN_AGE_MS = 5 * 60 * 1000;        // only touch pending records older than 5 min
 const STALE_REVIEW_MS = 48 * 60 * 60 * 1000;       // 48h SLA
+let sweeperTimer = null;
 
 async function reconcilePendingUploads() {
   const cutoff = new Date(Date.now() - RECONCILE_MIN_AGE_MS);
@@ -24,17 +25,17 @@ async function reconcilePendingUploads() {
   const affectedWorkers = new Set();
   for (const doc of pending) {
     try {
-      const head = await s3.headObject(doc.s3Key);
+      const head = await media.inspectAsset(doc.assetId);
       if (head.exists) {
         doc.status = 'uploaded';
         doc.uploadedAt = doc.uploadedAt || new Date();
         if (head.contentLength != null) doc.fileSizeBytes = head.contentLength;
         await doc.save();
         affectedWorkers.add(String(doc.worker));
-        console.log(`🩹 [video-reconcile] promoted orphaned upload ${doc.s3Key}`);
+        console.log(`🩹 [video-reconcile] promoted orphaned upload ${doc.assetId}`);
       }
     } catch (err) {
-      console.error(`[video-reconcile] headObject failed for ${doc.s3Key}: ${err.message}`);
+      console.error(`[video-reconcile] Cloudinary lookup failed for ${doc.assetId}: ${err.message}`);
     }
   }
 
@@ -98,8 +99,15 @@ function startSweeper() {
     console.log('🎬 Video maintenance jobs disabled (set VIDEO_JOBS_ENABLED=true to enable)');
     return;
   }
+  if (sweeperTimer) return;
   console.log(`🎬 Video maintenance jobs running every ${SWEEP_INTERVAL_MS / 60000} min`);
-  setInterval(sweep, SWEEP_INTERVAL_MS).unref();
+  sweeperTimer = setInterval(sweep, SWEEP_INTERVAL_MS);
+  if (sweeperTimer.unref) sweeperTimer.unref();
 }
 
-module.exports = { startSweeper, reconcilePendingUploads, alertStaleReviews };
+function stopSweeper() {
+  if (sweeperTimer) clearInterval(sweeperTimer);
+  sweeperTimer = null;
+}
+
+module.exports = { startSweeper, stopSweeper, reconcilePendingUploads, alertStaleReviews };

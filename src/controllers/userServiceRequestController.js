@@ -148,7 +148,8 @@ async function listRequests(req, res, next) {
   try {
     const requests = await ServiceRequest.find({ user: req.user._id })
       .sort({ createdAt: -1 })
-      .limit(50);
+      .limit(50)
+      .lean();
 
     const active = requests.filter((r) => OPEN_STATUSES.includes(r.status));
     const history = requests.filter((r) => !OPEN_STATUSES.includes(r.status));

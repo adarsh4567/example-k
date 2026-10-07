@@ -3,15 +3,25 @@
   "version": "1.0.0",
   "description": "Backend for Kaaryo cleaning-worker onboarding (Express + MongoDB)",
   "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node --watch server.js",
+    "build:admin": "node src/scripts/buildAdmin.js",
+    "preview:admin": "npm run build:admin && node src/scripts/serveAdmin.js",
+    "cloudinary:check": "node src/scripts/checkCloudinary.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
     "seed:shops": "node src/scripts/seedShopPartners.js",
     "worker-client": "node scripts/worker-client.js",
     "user-client": "node scripts/user-client.js",
     "test:trial": "node src/scripts/testTrialDecision.js",
-    "test:tracking": "node src/scripts/testTracking.js"
+    "test:tracking": "node src/scripts/testTracking.js",
+    "test:media": "node src/scripts/testMediaStorage.js",
+    "test": "npm run test:trial && npm run test:tracking && npm run test:media && npm run check",
+    "check": "node --check server.js && find src -name '*.js' -exec node --check {} \\;",
+    "db:indexes": "node src/scripts/createIndexes.js"
   },
   "keywords": [
     "kaaryo",
@@ -21,9 +31,8 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1091.0",
-    "@aws-sdk/s3-request-presigner": "^3.1091.0",
     "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.11.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -35,7 +44,6 @@
     "uuid": "^14.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4",
     "socket.io-client": "^4.8.3"
   }
 }

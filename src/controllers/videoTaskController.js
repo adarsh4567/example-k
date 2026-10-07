@@ -1,6 +1,6 @@
 const Worker = require('../models/Worker');
 const WorkerOnboardingVideo = require('../models/WorkerOnboardingVideo');
-const s3 = require('../services/s3Service');
+const media = require('../services/mediaStorageService');
 const { ok, fail } = require('../utils/response');
 
 // Static instructions shown on the RN "Task Instructions" screen. Kept server-side
@@ -29,13 +29,13 @@ const TIPS = [
 
 // Client-side rules the app should enforce; echoed here so both sides agree.
 const LIMITS = {
-  maxBytes: s3.MAX_BYTES,
+  maxBytes: media.MAX_BYTES,
   minDurationSeconds: 30,
   maxDurationSeconds: 180,
-  allowedContentTypes: s3.ALLOWED_CONTENT_TYPES,
+  allowedContentTypes: media.ALLOWED_CONTENT_TYPES,
 };
 
-// Serialise one video doc for API responses (never leaks presigned URLs from DB).
+// Serialise one video doc for API responses (signed URLs are never stored in DB).
 function videoView(doc) {
   if (!doc) return { status: 'not-started' };
   return {
@@ -60,9 +60,9 @@ async function getTasks(req, res, next) {
   }
 }
 
-// POST /api/worker/onboarding/video/presigned-url
+// POST /api/worker/onboarding/video/upload-signature
 // body: { taskNumber, fileName, fileType, fileSize }
-async function getPresignedUrl(req, res, next) {
+async function getUploadSignature(req, res, next) {
   try {
     const worker = req.worker;
     const taskNumber = Number(req.body.taskNumber);
@@ -70,12 +70,12 @@ async function getPresignedUrl(req, res, next) {
     const fileSize = Number(req.body.fileSize);
 
     if (![1, 2].includes(taskNumber)) return fail(res, 'taskNumber must be 1 or 2', 422);
-    if (!s3.isAllowedContentType(fileType)) {
+    if (!media.isAllowedContentType(fileType)) {
       return fail(res, 'Only video/mp4 and video/quicktime are allowed', 422);
     }
     if (!Number.isFinite(fileSize) || fileSize <= 0) return fail(res, 'A valid fileSize is required', 422);
-    if (fileSize > s3.MAX_BYTES) {
-      return fail(res, `Video exceeds the ${Math.round(s3.MAX_BYTES / (1024 * 1024))}MB limit`, 413);
+    if (fileSize > media.MAX_BYTES) {
+      return fail(res, `Video exceeds the ${Math.round(media.MAX_BYTES / (1024 * 1024))}MB limit`, 413);
     }
 
     const vt = worker.videoTask || {};
@@ -108,8 +108,8 @@ async function getPresignedUrl(req, res, next) {
       attempt = Math.min(2, (attempt || 1) + 1); // second and final attempt
     } // 'in_progress' → keep the current attempt (e.g. expired URL / reselect)
 
-    const s3Key = s3.buildVideoKey(worker._id, taskNumber, fileType);
-    const { url, expiresIn } = await s3.getPresignedPutUrl({ key: s3Key, contentType: fileType });
+    const assetId = media.buildOnboardingVideoId(worker._id, taskNumber);
+    const upload = await media.createDirectVideoUpload({ assetId });
 
     // One live record per (worker, task): upsert and reset any prior review state.
     await WorkerOnboardingVideo.findOneAndUpdate(
@@ -117,7 +117,7 @@ async function getPresignedUrl(req, res, next) {
       {
         worker: worker._id,
         taskNumber,
-        s3Key,
+        assetId,
         fileType,
         fileSizeBytes: fileSize,
         status: 'pending',
@@ -139,13 +139,15 @@ async function getPresignedUrl(req, res, next) {
     return ok(
       res,
       {
-        presignedUrl: url,
-        s3Key,
-        expiresIn,
-        // The client must PUT with exactly this header for the signature to match.
-        requiredHeaders: { 'Content-Type': fileType },
+        assetId,
+        upload: {
+          url: upload.url,
+          method: upload.method,
+          fields: upload.fields,
+          expiresInSeconds: upload.expiresIn,
+        },
       },
-      'Presigned URL generated'
+      'Cloudinary upload signature generated'
     );
   } catch (err) {
     next(err);
@@ -153,43 +155,55 @@ async function getPresignedUrl(req, res, next) {
 }
 
 // POST /api/worker/onboarding/video/confirm-upload
-// body: { taskNumber, s3Key, durationSeconds? }
+// body: { taskNumber, assetId, durationSeconds? }
 async function confirmUpload(req, res, next) {
   try {
     const worker = req.worker;
     const taskNumber = Number(req.body.taskNumber);
-    const { s3Key } = req.body;
+    const { assetId } = req.body;
     const durationSeconds = req.body.durationSeconds != null ? Number(req.body.durationSeconds) : null;
 
     if (![1, 2].includes(taskNumber)) return fail(res, 'taskNumber must be 1 or 2', 422);
-    if (!s3Key) return fail(res, 's3Key is required', 422);
+    if (!assetId) return fail(res, 'assetId is required', 422);
 
     // Bind the key to this worker: it must be the one we issued and live under their path.
     const expectedPrefix = `workers/${worker._id}/`;
-    if (!String(s3Key).startsWith(expectedPrefix)) {
+    if (!String(assetId).startsWith(`kaaryo/private/${expectedPrefix}`)) {
       return fail(res, 'This upload does not belong to you', 403);
     }
 
     const doc = await WorkerOnboardingVideo.findOne({ worker: worker._id, taskNumber });
-    if (!doc || doc.s3Key !== s3Key) {
+    if (!doc || doc.assetId !== assetId) {
       return fail(res, 'No matching pending upload found for this task', 404);
     }
 
-    // Verify the file actually landed on S3.
-    const head = await s3.headObject(s3Key);
+    // Verify the file actually landed on Cloudinary.
+    const head = await media.inspectAsset(assetId);
     if (!head.exists) {
       return fail(res, 'File not found on storage. Please retry the upload.', 409);
     }
 
     // Server-side size guard (defends against a bypassed client / oversized PUT).
-    if (head.contentLength != null && head.contentLength > s3.MAX_BYTES) {
-      await s3.deleteObject(s3Key).catch(() => {});
+    if (head.contentLength != null && head.contentLength > media.MAX_BYTES) {
+      await media.deleteAsset(assetId).catch(() => {});
       return fail(res, 'Uploaded file exceeds the size limit and was discarded', 413);
+    }
+    if (head.contentType && !media.isAllowedContentType(head.contentType)) {
+      await media.deleteAsset(assetId).catch(() => {});
+      return fail(res, 'Unsupported video format; upload MP4 or MOV', 422);
+    }
+    if (head.durationSeconds != null && (
+      head.durationSeconds < LIMITS.minDurationSeconds ||
+      head.durationSeconds > LIMITS.maxDurationSeconds
+    )) {
+      await media.deleteAsset(assetId).catch(() => {});
+      return fail(res, 'Video must be between 30 seconds and 3 minutes', 422);
     }
 
     doc.status = 'uploaded';
     doc.uploadedAt = new Date();
-    if (durationSeconds != null && Number.isFinite(durationSeconds)) doc.durationSeconds = durationSeconds;
+    if (head.durationSeconds != null) doc.durationSeconds = head.durationSeconds;
+    else if (durationSeconds != null && Number.isFinite(durationSeconds)) doc.durationSeconds = durationSeconds;
     if (head.contentLength != null) doc.fileSizeBytes = head.contentLength;
     await doc.save();
 
@@ -250,7 +264,13 @@ async function getStatus(req, res, next) {
       const d = byTask[n];
       const view = videoView(d);
       if (d && ['uploaded', 'under_review', 'approved', 'rejected'].includes(d.status)) {
-        try { view.previewUrl = await s3.getPresignedGetUrl(d.s3Key); } catch (_) { /* non-fatal */ }
+        try {
+          view.previewUrl = await media.getDeliveryUrl(
+            d.assetId,
+            'video',
+            media.formatForContentType(d.fileType)
+          );
+        } catch (_) { /* non-fatal */ }
       }
       return view;
     }
@@ -274,4 +294,4 @@ async function getStatus(req, res, next) {
   }
 }
 
-module.exports = { getTasks, getPresignedUrl, confirmUpload, getStatus, TASKS, TIPS, LIMITS };
+module.exports = { getTasks, getUploadSignature, confirmUpload, getStatus, TASKS, TIPS, LIMITS };

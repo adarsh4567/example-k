@@ -164,6 +164,11 @@ const workerAssessmentSchema = new mongoose.Schema(
 workerAssessmentSchema.index({ status: 1, feedbackSubmittedAt: 1 });
 // The deferred-payout sweep.
 workerAssessmentSchema.index({ 'payment.upfrontPaid': 1, 'payment.deferredPaid': 1 });
+workerAssessmentSchema.index({ worker: 1, status: 1, createdAt: -1 });
+workerAssessmentSchema.index({ shopPartner: 1, scheduledAt: -1 });
+workerAssessmentSchema.index({ slot: 1, status: 1 });
+workerAssessmentSchema.index({ status: 1, scheduledAt: 1, workerArrivedAt: 1 });
+workerAssessmentSchema.index({ status: 1, feedbackSubmittedAt: 1, 'feedback.reminderSentAt': 1 });
 
 workerAssessmentSchema.statics.STATUS = ASSESSMENT_STATUS;
 workerAssessmentSchema.statics.LIVE_STATUSES = LIVE_STATUSES;

@@ -646,7 +646,7 @@
     <form id="loginForm">
       <div class="field">
         <label for="apiBase">API Base URL</label>
-        <input type="text" id="apiBase" placeholder="http://40.192.6.26:4000" value="http://40.192.6.26:4000"
+        <input type="url" id="apiBase" placeholder="https://your-api.onrender.com"
           required />
       </div>
       <div class="field">
@@ -731,6 +731,7 @@
     </main>
   </div>
 
+  <script src="/config.js"></script>
   <script>
     (function () {
       'use strict';
@@ -782,7 +783,8 @@
       // The backend this panel talks to. IMPORTANT: it must be the SAME server the
       // worker app connects its socket to, or real-time trial pushes (trial:assigned /
       // worker:status_changed) fire on a different process and never reach the worker.
-      var DEFAULT_API_BASE = 'http://40.192.6.26:4000';
+      var DEFAULT_API_BASE = ((window.KAARYO_CONFIG && window.KAARYO_CONFIG.API_BASE_URL) || '')
+        .replace(/\/$/, '');
       apiBaseInput.value = DEFAULT_API_BASE;
 
       // ---------- Toasts ----------
@@ -798,13 +800,13 @@
 
       // ---------- Session persistence ----------
       function saveSession() {
-        localStorage.setItem(SESSION_KEY, JSON.stringify({
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({
           apiBase: state.apiBase, token: state.token, adminEmail: state.adminEmail,
         }));
       }
       function loadSession() {
         try {
-          var raw = localStorage.getItem(SESSION_KEY);
+          var raw = sessionStorage.getItem(SESSION_KEY);
           if (!raw) return null;
           return JSON.parse(raw);
         } catch (e) {
@@ -812,7 +814,7 @@
         }
       }
       function clearSession() {
-        localStorage.removeItem(SESSION_KEY);
+        sessionStorage.removeItem(SESSION_KEY);
         state.token = null;
         state.adminEmail = null;
       }
@@ -1042,6 +1044,7 @@
 
       function imgUrl(relPath) {
         if (!relPath) return '';
+        if (/^https?:\/\//i.test(relPath)) return relPath;
         return state.apiBase + relPath;
       }
 
@@ -1053,6 +1056,10 @@
         <span>${label}</span>
       </div>
     `;
+      }
+
+      function isImageRef(ref) {
+        return !!ref && (/^https?:\/\//i.test(ref) || ref.indexOf('/uploads/') === 0);
       }
 
       function renderDetailModal(w) {
@@ -1093,7 +1100,7 @@
 
         var photos = photoBlock('Profile photo', w.profilePhoto) +
           photoBlock('Live selfie (face match)', w.faceMatch && w.faceMatch.selfiePath) +
-          (w.consent && w.consent.signaturePath && w.consent.signaturePath.indexOf('/uploads/') === 0
+          (w.consent && isImageRef(w.consent.signaturePath)
             ? photoBlock('Signature', w.consent.signaturePath)
             : '');
 
@@ -1697,7 +1704,7 @@
       }
 
       function openSpecReview(s) {
-        // Fetch a fresh presigned playback URL, then render the review modal.
+        // Fetch a fresh expiring playback URL, then render the review modal.
         api('/api/admin/specialization-submissions/' + s.id + '/video')
           .then(function (data) { renderSpecReview(s, data.url); })
           .catch(function (err) { toast(err.message, 'error'); });
@@ -3389,8 +3396,8 @@
       // ---------- Bootstrap ----------
       var existing = loadSession();
       if (existing && existing.token && existing.apiBase) {
-        // Always force the configured DEFAULT_API_BASE so we don't try connecting to stale URLs from localStorage
-        existing.apiBase = DEFAULT_API_BASE;
+        // Deployment configuration wins; manually entered URLs remain usable locally.
+        if (DEFAULT_API_BASE) existing.apiBase = DEFAULT_API_BASE;
         state.apiBase = existing.apiBase;
         state.token = existing.token;
         state.adminEmail = existing.adminEmail;

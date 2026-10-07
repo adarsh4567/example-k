@@ -178,7 +178,10 @@ async function createTrial(req, res, next) {
 // GET /api/user/trials  — this customer's trial bookings
 async function listTrials(req, res, next) {
   try {
-    const jobs = await TrialJob.find({ requestedBy: req.user._id }).sort({ createdAt: -1 }).limit(50);
+    const jobs = await TrialJob.find({ requestedBy: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
     // "Active" = still needs something from the customer, which is not the same
     // as "not finished" — a paid AND rated trial belongs in history. See
     // TrialJob.needsCustomer.

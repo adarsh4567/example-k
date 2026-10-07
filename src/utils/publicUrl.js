@@ -22,12 +22,15 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${proce
 
 /**
  * @param {string|null|undefined} ref  a relative path (`/uploads/x.jpg`), an
- *   already-absolute URL (passed through untouched — e.g. a future S3/CDN
- *   URL), or nullish (returns null).
+ *   already-absolute URL (passed through untouched — e.g. a Cloudinary URL),
+ *   or nullish (returns null).
  */
 function toPublicUrl(ref) {
   if (!ref) return null;
   if (/^https?:\/\//i.test(ref)) return ref;
+  // Private object references must only be resolved by an authenticated server
+  // path (for example the admin worker-detail endpoint).
+  if (ref.startsWith('cloudinary:authenticated:')) return null;
   return `${PUBLIC_BASE_URL}${ref.startsWith('/') ? ref : `/${ref}`}`;
 }
 

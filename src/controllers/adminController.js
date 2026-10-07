@@ -7,6 +7,7 @@ const { TRIAL_ENABLED } = require('../config/trialConfig');
 const { ASSESSMENT_ENABLED, ASSESSMENT_CATEGORY } = require('../config/assessmentConfig');
 const { resolveWorkerCategory } = require('../utils/workerCategory');
 const { ok, fail } = require('../utils/response');
+const media = require('../services/mediaStorageService');
 
 // POST /api/admin/login  { email, password }
 async function login(req, res, next) {
@@ -21,7 +22,7 @@ async function login(req, res, next) {
     if (!valid) return fail(res, 'Invalid credentials', 401);
 
     const token = jwt.sign({ id: admin._id, role: admin.role }, process.env.ADMIN_JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES_IN || '30d',
+      expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '8h',
     });
     return ok(res, { token, admin: { id: admin._id, email: admin.email, role: admin.role } }, 'Logged in');
   } catch (err) {
@@ -43,7 +44,8 @@ async function listWorkers(req, res, next) {
         .select('phone fullName status onboardingStep location.city submittedAt createdAt')
         .sort({ submittedAt: -1, createdAt: -1 })
         .skip((page - 1) * limit)
-        .limit(limit),
+        .limit(limit)
+        .lean(),
     ]);
 
     return ok(res, { total, page, limit, workers }, 'Workers fetched');
@@ -57,7 +59,16 @@ async function getWorker(req, res, next) {
   try {
     const worker = await Worker.findById(req.params.id);
     if (!worker) return fail(res, 'Worker not found', 404);
-    return ok(res, { worker }, 'Worker detail');
+    const view = worker.toObject();
+    const [profilePhoto, selfiePath, signaturePath] = await Promise.all([
+      media.resolveStoredUrl(view.profilePhoto),
+      media.resolveStoredUrl(view.faceMatch && view.faceMatch.selfiePath),
+      media.resolveStoredUrl(view.consent && view.consent.signaturePath),
+    ]);
+    view.profilePhoto = profilePhoto;
+    if (view.faceMatch) view.faceMatch.selfiePath = selfiePath;
+    if (view.consent) view.consent.signaturePath = signaturePath;
+    return ok(res, { worker: view }, 'Worker detail');
   } catch (err) {
     next(err);
   }

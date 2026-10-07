@@ -33,7 +33,10 @@ async function getCreditsBalance(userId) {
 // only grows on a reward — a customer will not have hundreds of these before
 // redemption ships and gives the screen a reason to page.
 async function listTransactions(userId, limit = RECENT_LIMIT) {
-  const rows = await UserWalletTransaction.find({ user: userId }).sort({ createdAt: -1 }).limit(limit);
+  const rows = await UserWalletTransaction.find({ user: userId })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
   return rows.map((t) => ({
     id: t._id,
     type: t.type,

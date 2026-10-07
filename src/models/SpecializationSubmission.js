@@ -23,7 +23,8 @@ const specializationSubmissionSchema = new mongoose.Schema(
     category: { type: String, required: true },     // e.g. 'cleaning'
     subcategory: { type: String, required: true },   // e.g. 'deep_cleaning'
 
-    s3Key: { type: String, required: true },
+    assetId: { type: String, required: true },
+    fileType: { type: String },
     fileSizeBytes: { type: Number },
     durationSeconds: { type: Number },
 

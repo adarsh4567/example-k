@@ -217,6 +217,13 @@ serviceRequestSchema.index({ location: '2dsphere' });
 
 // The customer app's two hot reads: "my current request" and "my history".
 serviceRequestSchema.index({ user: 1, status: 1, createdAt: -1 });
+serviceRequestSchema.index({ 'offers.worker': 1, status: 1, createdAt: -1 });
+serviceRequestSchema.index({ acceptedBy: 1, updatedAt: -1 });
+serviceRequestSchema.index({ acceptedBy: 1, status: 1, completedAt: -1 });
+
+// The frequent dispatch sweep must scale with due work, not collection size.
+serviceRequestSchema.index({ status: 1, dispatchExpiresAt: 1 });
+serviceRequestSchema.index({ status: 1, searchExpiresAt: 1 });
 
 serviceRequestSchema.statics.STATUS = REQUEST_STATUS;
 serviceRequestSchema.statics.WORK_STAGE = WORK_STAGE;

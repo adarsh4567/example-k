@@ -1,6 +1,6 @@
 const Worker = require('../models/Worker');
 const WorkerOnboardingVideo = require('../models/WorkerOnboardingVideo');
-const s3 = require('../services/s3Service');
+const media = require('../services/mediaStorageService');
 const { notifyWorker } = require('../services/notificationService');
 const { ok, fail } = require('../utils/response');
 
@@ -38,7 +38,7 @@ async function queue(req, res, next) {
 }
 
 // GET /api/admin/video-review/:workerId
-// Worker header info + both task videos with short-lived presigned streaming URLs.
+// Worker header info + both task videos with expiring Cloudinary playback URLs.
 async function getWorkerVideos(req, res, next) {
   try {
     const worker = await Worker.findById(req.params.workerId).select(
@@ -52,7 +52,11 @@ async function getWorkerVideos(req, res, next) {
       docs.map(async (d) => {
         let playbackUrl = null;
         try {
-          playbackUrl = await s3.getPresignedGetUrl(d.s3Key);
+          playbackUrl = await media.getDeliveryUrl(
+            d.assetId,
+            'video',
+            media.formatForContentType(d.fileType)
+          );
         } catch (_) {
           /* non-fatal — the URL just won't render */
         }
@@ -67,7 +71,7 @@ async function getWorkerVideos(req, res, next) {
           reviewerScore: d.reviewerScore || null,
           rejectionReason: d.rejectionReason || null,
           playbackUrl,
-          playbackExpiresIn: s3.GET_URL_TTL,
+          playbackExpiresIn: media.DELIVERY_URL_TTL,
         };
       })
     );
