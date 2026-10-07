@@ -4,11 +4,9 @@ const path = require('path');
 
 const projectRoot = path.join(__dirname, '..', '..');
 const outputDir = path.join(projectRoot, 'admin-dist');
-const configuredApiBase = String(process.env.ADMIN_API_BASE_URL || '').trim();
-
-if (!configuredApiBase) {
-  throw new Error('ADMIN_API_BASE_URL is required (for example https://kaaryo-api.onrender.com)');
-}
+const configuredApiBase = String(
+  process.env.ADMIN_API_BASE_URL || 'https://kaaryo-api-37hi.onrender.com'
+).trim();
 const parsedApiBase = new URL(configuredApiBase);
 const isLocal = parsedApiBase.protocol === 'http:' && parsedApiBase.hostname === 'localhost';
 if (parsedApiBase.protocol !== 'https:' && !isLocal) {

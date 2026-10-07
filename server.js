@@ -51,14 +51,20 @@ if (process.env.CLOUDINARY_MODE !== 'real' && !fs.existsSync(uploadsDir)) {
 }
 
 // Core middleware
-const allowedOrigins = (process.env.CORS_ORIGINS || '')
+const configuredOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
+// The admin control center is intentionally run from the local preview server
+// while this API is hosted on Render. Browser origins are exact: localhost and
+// 127.0.0.1 must both be listed even though they reach the same machine.
+const allowedOrigins = Array.from(new Set([
+  ...configuredOrigins,
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+]));
 app.use(cors({
-  origin: allowedOrigins.length
-    ? (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin))
-    : '*',
+  origin: (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin)),
 }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || '100kb' }));

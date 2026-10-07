@@ -60,7 +60,7 @@ npm run dev
 The API defaults to `http://localhost:5000`. Health endpoints are `/health/live` and `/health/ready`. In a second terminal, preview the admin against that API:
 
 ```bash
-ADMIN_API_BASE_URL=http://localhost:5000 npm run preview:admin
+npm run preview:admin
 ```
 
 Open `http://127.0.0.1:4173`. Use `npm start` instead of `npm run dev` to run without file watching.
@@ -267,7 +267,7 @@ The free tier cold-starts and can drop sockets during deploys/restarts. Upgrade 
 
 ## Vercel admin deployment
 
-The admin is a static build; the API remains on Render. In Vercel, import this repository, leave the project root at the repository root, and add `ADMIN_API_BASE_URL=https://your-api.onrender.com` to Production and Preview environments. `vercel.json` runs the build and publishes `admin-dist`.
+The admin is preconfigured for `https://kaaryo-api-37hi.onrender.com`. It can run from the local preview server or deploy as a static Vercel build. Setting `ADMIN_API_BASE_URL` at build time remains available as an override.
 
 CLI equivalent:
 
@@ -291,8 +291,8 @@ npm run test:trial
 npm run test:tracking
 npm run test:media
 npm run check
-ADMIN_API_BASE_URL=http://localhost:5000 npm run build:admin
-ADMIN_API_BASE_URL=http://localhost:5000 npm run preview:admin
+npm run build:admin
+npm run preview:admin
 npm run db:indexes       # changes database indexes
 npm run seed:admin       # changes database state
 npm run seed:shops       # changes database state
